@@ -37,11 +37,14 @@ func styleHandler(c fiber.Ctx) error {
 		labelColor = "#c8cbd1"
 	}
 
+	// Glyphs + sprites handlers are still stubs (501). Omit `glyphs`
+	// and `sprite` entries from the style — MapLibre only fetches them
+	// lazily when rendering text or symbol layers, and our minimal
+	// background-only style has neither. Add them back when the
+	// handlers are real (needed once tile data lands).
 	style := map[string]any{
 		"version": 8,
 		"name":    "LocalMaps " + name,
-		"glyphs":  "/api/glyphs/{fontstack}/{range}.pbf",
-		"sprite":  "/api/sprites/" + name,
 		"sources": map[string]any{},
 		"layers": []any{
 			map[string]any{
