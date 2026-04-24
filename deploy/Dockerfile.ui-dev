@@ -47,5 +47,8 @@ USER node
 
 EXPOSE 3000
 
-# `npm run dev` is watch-mode; file changes under /src/ui trigger HMR.
-CMD ["npm", "run", "dev"]
+# The chart mounts <dev.hostPath>/ui/ over /src/ui/, which hides the
+# node_modules/ baked above. On boot, if node_modules/next is missing,
+# run `npm ci` to populate it into the mounted volume; subsequent
+# reboots reuse what's already there (fast).
+CMD ["sh", "-c", "[ -x node_modules/.bin/next ] || npm ci --include=dev; exec npm run dev"]
