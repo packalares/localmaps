@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1.7
+#
+# LocalMaps — UI image (dev convenience only).
+#
+# Per docs/10-deploy.md, the Go gateway serves the Next.js build as
+# embedded static content in production. This image exists only for
+# developer convenience when running `docker compose` and wanting a
+# hot Next.js dev/prod server separate from the gateway. The
+# production Helm chart does NOT deploy this image.
+#
+# Notes:
+# - ui/next.config.mjs does not set `output: 'standalone'`, so we
+#   ship the full .next directory and run `next start`. If the UI
+#   team later enables standalone output, flip this to copy
+#   .next/standalone + .next/static + public and `node server.js`.
+# - The repo uses npm + package-lock.json (not pnpm); we install via
+#   `npm ci` for a reproducible build.
+
+# ---------- Stage 1: build ----------
+FROM node:20-alpine AS build
+
+WORKDIR /src
+
+# Copy only what the UI build needs. The contracts dir feeds the
+# generated TS types the UI imports at build time.
+COPY ui/package.json ui/package-lock.json ./ui/
+COPY contracts/ ./contracts/
+
+WORKDIR /src/ui
+RUN npm ci
+
+# Now the full source, then build.
+WORKDIR /src
+COPY ui/ ./ui/
+
+WORKDIR /src/ui
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+# ---------- Stage 2: runtime ----------
+FROM node:20-alpine
+
+RUN addgroup -g 10001 -S localmaps \
+    && adduser -u 10001 -S localmaps -G localmaps
+
+WORKDIR /app
+
+# Copy the built UI + just enough to `next start`.
+COPY --from=build /src/ui/.next            ./.next
+COPY --from=build /src/ui/public           ./public
+COPY --from=build /src/ui/node_modules     ./node_modules
+COPY --from=build /src/ui/package.json     ./package.json
+COPY --from=build /src/ui/package-lock.json ./package-lock.json
+COPY --from=build /src/ui/next.config.mjs  ./next.config.mjs
+
+RUN chown -R localmaps:localmaps /app
+
+USER 10001:10001
+
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
+
+EXPOSE 3000
+
+CMD ["npm", "start"]

@@ -1,0 +1,1403 @@
+openapi: 3.0.3
+info:
+  title: LocalMaps Gateway API
+  version: 0.1.0
+  description: |
+    Self-hosted maps platform. This spec is the ONLY source of truth
+    for HTTP contracts between the UI and the Go gateway. Every agent
+    implementing or calling an endpoint MUST reference this file.
+    See apps/localmaps/docs/06-agent-rules.md R1 and R2.
+
+servers:
+  - url: /
+    description: Relative to the gateway host.
+
+tags:
+  - name: map
+    description: Tiles, styles, sprites, glyphs.
+  - name: geocode
+    description: Search + reverse geocoding.
+  - name: routing
+    description: Directions, matrix, isochrones.
+  - name: pois
+    description: Points of interest (Overture + OSM).
+  - name: regions
+    description: Region catalog + installation management.
+  - name: jobs
+    description: Background job status.
+  - name: settings
+    description: Runtime configuration.
+  - name: share
+    description: Short links + OpenGraph + embed.
+  - name: meta
+    description: Health, readiness, version, metrics.
+  - name: auth
+    description: Native session-cookie authentication and user management.
+
+security:
+  - {}               # default: public endpoints
+  - sessionAuth: []  # admin endpoints use this cookie
+
+components:
+  securitySchemes:
+    sessionAuth:
+      type: apiKey
+      in: cookie
+      name: localmaps_session
+      description: HTTP-only session cookie set by POST /api/auth/login.
+
+  schemas:
+    TraceID:
+      type: string
+      description: Correlates a request across services. Every response
+                   includes one.
+      example: "a7f3e9d1b2c4"
+
+    ErrorCode:
+      type: string
+      enum:
+        - BAD_REQUEST
+        - UNAUTHORIZED
+        - FORBIDDEN
+        - NOT_FOUND
+        - CONFLICT
+        - RATE_LIMITED
+        - INTERNAL
+        - UPSTREAM_UNAVAILABLE
+        - REGION_NOT_READY
+        - REGION_NOT_INSTALLED
+        - REGION_OUT_OF_COVERAGE
+        - INVALID_REGION_NAME
+        - JOB_NOT_FOUND
+        - SCHEMA_MISMATCH
+        - EGRESS_DENIED
+
+    ErrorResponse:
+      type: object
+      required: [error, traceId]
+      properties:
+        error:
+          type: object
+          required: [code, message, retryable]
+          properties:
+            code: { $ref: '#/components/schemas/ErrorCode' }
+            message:
+              type: string
+              description: Human-safe message. Never includes stack traces or internal paths.
+            retryable:
+              type: boolean
+            details:
+              type: object
+              additionalProperties: true
+        traceId: { $ref: '#/components/schemas/TraceID' }
+
+    LatLon:
+      type: object
+      required: [lat, lon]
+      properties:
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+        lon:
+          type: number
+          minimum: -180
+          maximum: 180
+
+    BBox:
+      type: array
+      description: "[minLon, minLat, maxLon, maxLat]"
+      minItems: 4
+      maxItems: 4
+      items:
+        type: number
+
+    RegionState:
+      type: string
+      enum:
+        - not_installed
+        - downloading
+        - processing_tiles
+        - processing_routing
+        - processing_geocoding
+        - processing_poi
+        - ready
+        - updating
+        - failed
+        - archived
+
+    RegionSchedule:
+      type: string
+      description: "'never' | 'daily' | 'weekly' | 'monthly' | cron string"
+      example: "monthly"
+
+    Region:
+      type: object
+      required: [name, displayName, state, sourceUrl]
+      properties:
+        name: { type: string, example: "europe/romania" }
+        displayName: { type: string, example: "Romania" }
+        parent: { type: string, nullable: true, example: "europe" }
+        sourceUrl: { type: string, format: uri }
+        sourcePbfBytes: { type: integer, nullable: true }
+        sourcePbfSha256: { type: string, nullable: true }
+        bbox: { $ref: '#/components/schemas/BBox', nullable: true }
+        state: { $ref: '#/components/schemas/RegionState' }
+        stateDetail: { type: string, nullable: true }
+        lastError: { type: string, nullable: true }
+        installedAt: { type: string, format: date-time, nullable: true }
+        lastUpdatedAt: { type: string, format: date-time, nullable: true }
+        nextUpdateAt: { type: string, format: date-time, nullable: true }
+        schedule: { $ref: '#/components/schemas/RegionSchedule', nullable: true }
+        diskBytes: { type: integer, nullable: true }
+        activeJobId: { type: string, nullable: true }
+
+    RegionCatalogEntry:
+      type: object
+      required: [name, displayName, kind, sourceUrl]
+      properties:
+        name: { type: string, example: "europe/romania" }
+        displayName: { type: string }
+        kind:
+          type: string
+          enum: [continent, country, subregion]
+        parent: { type: string, nullable: true }
+        sourceUrl: { type: string, format: uri }
+        sourcePbfBytes: { type: integer, nullable: true }
+        iso3166_1: { type: string, nullable: true, example: "RO" }
+        estimatedBuildBytes: { type: integer, nullable: true }
+        children:
+          type: array
+          items: { $ref: '#/components/schemas/RegionCatalogEntry' }
+
+    JobState:
+      type: string
+      enum: [queued, running, succeeded, failed, cancelled]
+
+    JobKind:
+      type: string
+      enum:
+        - download_pbf
+        - build_pmtiles
+        - build_valhalla
+        - build_pelias
+        - build_overture
+        - swap_region
+        - update_region
+        - archive_region
+
+    Job:
+      type: object
+      required: [id, kind, state]
+      properties:
+        id: { type: string }
+        kind: { $ref: '#/components/schemas/JobKind' }
+        region: { type: string, nullable: true }
+        state: { $ref: '#/components/schemas/JobState' }
+        progress:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          nullable: true
+        message: { type: string, nullable: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        finishedAt: { type: string, format: date-time, nullable: true }
+        error: { type: string, nullable: true }
+        parentJobId: { type: string, nullable: true }
+
+    GeocodeResult:
+      type: object
+      required: [id, label, confidence, center]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        category: { type: string, nullable: true }
+        address:
+          type: object
+          additionalProperties: { type: string }
+        center: { $ref: '#/components/schemas/LatLon' }
+        bbox: { $ref: '#/components/schemas/BBox', nullable: true }
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        region: { type: string, nullable: true, description: "Installed region that provided the result" }
+
+    RouteMode:
+      type: string
+      enum: [auto, bicycle, pedestrian, truck]
+
+    RouteRequest:
+      type: object
+      required: [locations, mode]
+      properties:
+        locations:
+          type: array
+          minItems: 2
+          items: { $ref: '#/components/schemas/LatLon' }
+        mode: { $ref: '#/components/schemas/RouteMode' }
+        avoidHighways: { type: boolean, default: false }
+        avoidTolls: { type: boolean, default: false }
+        avoidFerries: { type: boolean, default: false }
+        alternatives: { type: integer, default: 0, minimum: 0, maximum: 5 }
+        units:
+          type: string
+          enum: [metric, imperial]
+          default: metric
+        language:
+          type: string
+          nullable: true
+        truck:
+          type: object
+          nullable: true
+          properties:
+            heightMeters: { type: number }
+            widthMeters: { type: number }
+            weightTons: { type: number }
+            lengthMeters: { type: number }
+
+    RouteLeg:
+      type: object
+      required: [summary, maneuvers, geometry]
+      properties:
+        summary:
+          type: object
+          properties:
+            timeSeconds: { type: number }
+            distanceMeters: { type: number }
+        maneuvers:
+          type: array
+          items:
+            type: object
+            required: [instruction, beginShapeIndex]
+            properties:
+              instruction: { type: string }
+              beginShapeIndex: { type: integer }
+              endShapeIndex: { type: integer }
+              distanceMeters: { type: number }
+              timeSeconds: { type: number }
+              type: { type: string }
+              streetName: { type: string, nullable: true }
+        geometry:
+          type: object
+          required: [polyline]
+          properties:
+            polyline:
+              type: string
+              description: Google-style encoded polyline (precision 6).
+
+    Route:
+      type: object
+      required: [id, summary, legs]
+      properties:
+        id: { type: string, description: "Opaque id; use for GPX/KML export." }
+        summary:
+          type: object
+          properties:
+            timeSeconds: { type: number }
+            distanceMeters: { type: number }
+        legs:
+          type: array
+          items: { $ref: '#/components/schemas/RouteLeg' }
+        waypoints:
+          type: array
+          items: { $ref: '#/components/schemas/LatLon' }
+        mode: { $ref: '#/components/schemas/RouteMode' }
+
+    RouteResponse:
+      type: object
+      required: [routes, traceId]
+      properties:
+        routes:
+          type: array
+          items: { $ref: '#/components/schemas/Route' }
+        traceId: { $ref: '#/components/schemas/TraceID' }
+
+    IsochroneRequest:
+      type: object
+      required: [origin, contoursSeconds]
+      properties:
+        origin: { $ref: '#/components/schemas/LatLon' }
+        mode: { $ref: '#/components/schemas/RouteMode' }
+        contoursSeconds:
+          type: array
+          items: { type: integer }
+          description: "Seconds of travel for each isochrone polygon (e.g. [600, 1800, 3600])"
+
+    MatrixRequest:
+      type: object
+      required: [sources, targets, mode]
+      properties:
+        sources:
+          type: array
+          items: { $ref: '#/components/schemas/LatLon' }
+        targets:
+          type: array
+          items: { $ref: '#/components/schemas/LatLon' }
+        mode: { $ref: '#/components/schemas/RouteMode' }
+
+    MatrixResponse:
+      type: object
+      required: [matrix, traceId]
+      properties:
+        matrix:
+          type: array
+          description: "sources x targets; each cell {timeSeconds, distanceMeters}"
+          items:
+            type: array
+            items:
+              type: object
+              properties:
+                timeSeconds: { type: number }
+                distanceMeters: { type: number }
+        traceId: { $ref: '#/components/schemas/TraceID' }
+
+    Poi:
+      type: object
+      required: [id, label, center]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        category: { type: string, nullable: true }
+        center: { $ref: '#/components/schemas/LatLon' }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+        source:
+          type: string
+          enum: [overture, osm]
+        region: { type: string, nullable: true }
+
+    PoiCategory:
+      type: object
+      required: [id, label]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        icon: { type: string, nullable: true }
+        children:
+          type: array
+          items: { $ref: '#/components/schemas/PoiCategory' }
+
+    SettingsTree:
+      type: object
+      description: "Full settings tree. See docs/07-config-schema.md."
+      additionalProperties: true
+
+    SettingsSchemaNode:
+      type: object
+      description: "One node in the settings schema (primitive, enum, object, or array)."
+      required: [type]
+      properties:
+        key:
+          type: string
+          description: "Dot-path of this node in the settings tree (e.g. `map.style`)."
+        type:
+          type: string
+          enum: [object, string, integer, number, boolean, enum, array]
+        description: { type: string }
+        default: {}
+        enumValues:
+          type: array
+          items: { type: string }
+        minimum: { type: number }
+        maximum: { type: number }
+        items: { $ref: '#/components/schemas/SettingsSchemaNode' }
+        properties:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/SettingsSchemaNode' }
+        uiGroup:
+          type: string
+          description: "UI grouping hint (e.g. `map`, `routing`). Defaults to first segment of `key`."
+        unit:
+          type: string
+          description: "Optional unit for display (e.g. `seconds`, `px`, `GB`)."
+        step:
+          type: number
+          description: "Suggested step for numeric inputs."
+        itemType:
+          type: string
+          enum: [string, integer, number, boolean, object]
+          description: "For arrays: element type."
+        readOnly:
+          type: boolean
+          default: false
+        pattern:
+          type: string
+          description: "Optional regex constraint for string values."
+
+    SettingsSchemaResponse:
+      type: object
+      required: [version, nodes]
+      properties:
+        version:
+          type: integer
+          description: "Bumped when the schema shape changes."
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/SettingsSchemaNode' }
+
+    ShortLink:
+      type: object
+      required: [code, url, createdAt]
+      properties:
+        code: { type: string }
+        url: { type: string, format: uri }
+        createdAt: { type: string, format: date-time }
+        lastHitAt: { type: string, format: date-time, nullable: true }
+        hitCount: { type: integer }
+
+    AuthUser:
+      type: object
+      required: [id, username, role]
+      properties:
+        id: { type: integer, format: int64 }
+        username: { type: string, minLength: 1 }
+        role:
+          type: string
+          enum: [admin, viewer]
+        createdAt: { type: string, format: date-time }
+        lastLoginAt: { type: string, format: date-time, nullable: true }
+        disabled: { type: boolean }
+
+    AuthMeResponse:
+      type: object
+      required: [user]
+      properties:
+        user: { $ref: '#/components/schemas/AuthUser' }
+
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+paths:
+  # --- MAP TILES -----------------------------------------------------
+  /api/tiles/{z}/{x}/{y}.pbf:
+    get:
+      tags: [map]
+      summary: Vector tile for a coord/zoom.
+      parameters:
+        - in: path
+          name: z
+          required: true
+          schema: { type: integer, minimum: 0, maximum: 20 }
+        - in: path
+          name: x
+          required: true
+          schema: { type: integer, minimum: 0 }
+        - in: path
+          name: y
+          required: true
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Mapbox Vector Tile (protobuf) bytes.
+          content:
+            application/x-protobuf: {}
+        "204":
+          description: Tile has no features at this z/x/y.
+        "404":
+          description: No installed region covers this tile.
+          $ref: '#/components/responses/Error'
+  /api/tiles/metadata:
+    get:
+      tags: [map]
+      summary: Aggregated pmtiles metadata for all installed regions.
+      responses:
+        "200":
+          description: Metadata blob.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  minZoom: { type: integer }
+                  maxZoom: { type: integer }
+                  bounds: { $ref: '#/components/schemas/BBox' }
+                  regions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        bounds: { $ref: '#/components/schemas/BBox' }
+  /api/styles/{name}.json:
+    get:
+      tags: [map]
+      summary: MapLibre style JSON.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+            enum: [light, dark, print]
+      responses:
+        "200":
+          description: MapLibre style JSON.
+          content:
+            application/json: {}
+  /api/sprites/{name}@{density}.{ext}:
+    get:
+      tags: [map]
+      summary: Sprite sheet.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+        - in: path
+          name: density
+          required: true
+          schema: { type: string, enum: ["1x", "2x"] }
+        - in: path
+          name: ext
+          required: true
+          schema: { type: string, enum: [png, json] }
+      responses:
+        "200":
+          description: Sprite asset bytes.
+          content:
+            "*/*": {}
+  /api/glyphs/{fontstack}/{range}.pbf:
+    get:
+      tags: [map]
+      summary: Glyph ranges for text rendering.
+      parameters:
+        - in: path
+          name: fontstack
+          required: true
+          schema: { type: string }
+        - in: path
+          name: range
+          required: true
+          schema: { type: string, pattern: '^\d+-\d+$' }
+      responses:
+        "200":
+          description: Glyph range protobuf.
+          content:
+            application/x-protobuf: {}
+
+  # --- GEOCODE ------------------------------------------------------
+  /api/geocode/autocomplete:
+    get:
+      tags: [geocode]
+      summary: Autocomplete search-as-you-type.
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - in: query
+          name: focus.lat
+          schema: { type: number }
+        - in: query
+          name: focus.lon
+          schema: { type: number }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+        - in: query
+          name: lang
+          schema: { type: string }
+      responses:
+        "200":
+          description: Ranked results.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/GeocodeResult' }
+                  traceId: { $ref: '#/components/schemas/TraceID' }
+        "400":
+          $ref: '#/components/responses/Error'
+        "429":
+          $ref: '#/components/responses/Error'
+
+  /api/geocode/search:
+    get:
+      tags: [geocode]
+      summary: Full-text search (for sentence-level queries).
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - in: query
+          name: focus.lat
+          schema: { type: number }
+        - in: query
+          name: focus.lon
+          schema: { type: number }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+      responses:
+        "200":
+          description: Ranked results.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/GeocodeResult' }
+                  traceId: { $ref: '#/components/schemas/TraceID' }
+
+  /api/geocode/reverse:
+    get:
+      tags: [geocode]
+      summary: Reverse geocode a coordinate.
+      parameters:
+        - in: query
+          name: lat
+          required: true
+          schema: { type: number }
+        - in: query
+          name: lon
+          required: true
+          schema: { type: number }
+      responses:
+        "200":
+          description: Nearest address.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result: { $ref: '#/components/schemas/GeocodeResult' }
+                  traceId: { $ref: '#/components/schemas/TraceID' }
+        "404":
+          $ref: '#/components/responses/Error'
+
+  # --- ROUTING -------------------------------------------------------
+  /api/route:
+    post:
+      tags: [routing]
+      summary: Compute a route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RouteRequest' }
+      responses:
+        "200":
+          description: Routes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteResponse' }
+        "400":
+          $ref: '#/components/responses/Error'
+        "404":
+          description: No region covers the request.
+          $ref: '#/components/responses/Error'
+
+  /api/route/{id}/gpx:
+    get:
+      tags: [routing]
+      summary: Export a previously-computed route as GPX.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: GPX XML.
+          content:
+            application/gpx+xml: {}
+        "404":
+          $ref: '#/components/responses/Error'
+
+  /api/route/{id}/kml:
+    get:
+      tags: [routing]
+      summary: Export as KML.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: KML XML.
+          content:
+            application/vnd.google-earth.kml+xml: {}
+
+  /api/matrix:
+    post:
+      tags: [routing]
+      summary: Distance/time matrix.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MatrixRequest' }
+      responses:
+        "200":
+          description: Matrix.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MatrixResponse' }
+
+  /api/isochrone:
+    post:
+      tags: [routing]
+      summary: Reachable-in-time polygons.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IsochroneRequest' }
+      responses:
+        "200":
+          description: GeoJSON FeatureCollection.
+          content:
+            application/json: {}
+
+  # --- POIs ----------------------------------------------------------
+  /api/pois:
+    get:
+      tags: [pois]
+      summary: Query POIs by bbox / text / category.
+      parameters:
+        - in: query
+          name: bbox
+          description: "minLon,minLat,maxLon,maxLat"
+          schema: { type: string }
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: category
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        "200":
+          description: POI list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pois:
+                    type: array
+                    items: { $ref: '#/components/schemas/Poi' }
+                  traceId: { $ref: '#/components/schemas/TraceID' }
+
+  /api/pois/{id}:
+    get:
+      tags: [pois]
+      summary: Single POI.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: POI.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Poi' }
+        "404":
+          $ref: '#/components/responses/Error'
+
+  /api/pois/categories:
+    get:
+      tags: [pois]
+      summary: Category taxonomy.
+      responses:
+        "200":
+          description: Tree.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories:
+                    type: array
+                    items: { $ref: '#/components/schemas/PoiCategory' }
+
+  # --- REGIONS -------------------------------------------------------
+  /api/regions:
+    get:
+      tags: [regions]
+      summary: List installed / in-progress regions.
+      responses:
+        "200":
+          description: List.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  regions:
+                    type: array
+                    items: { $ref: '#/components/schemas/Region' }
+    post:
+      tags: [regions]
+      summary: Install a region.
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                schedule: { $ref: '#/components/schemas/RegionSchedule' }
+      responses:
+        "202":
+          description: Install job queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  region: { $ref: '#/components/schemas/Region' }
+                  jobId: { type: string }
+        "409":
+          description: Already installed or an active install exists.
+          $ref: '#/components/responses/Error'
+
+  /api/regions/catalog:
+    get:
+      tags: [regions]
+      summary: Available-to-install tree from Geofabrik.
+      parameters:
+        - in: query
+          name: force
+          schema: { type: boolean, default: false }
+          description: Bypass cache.
+      responses:
+        "200":
+          description: Catalogue tree.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  catalog:
+                    type: array
+                    items: { $ref: '#/components/schemas/RegionCatalogEntry' }
+                  fetchedAt: { type: string, format: date-time }
+
+  /api/regions/{name}:
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema: { type: string }
+    get:
+      tags: [regions]
+      responses:
+        "200":
+          description: Region state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Region' }
+        "404":
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [regions]
+      security: [{ sessionAuth: [] }]
+      summary: Uninstall (archive) a region.
+      responses:
+        "200":
+          description: Deleted / archived.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  region: { $ref: '#/components/schemas/Region' }
+
+  /api/regions/{name}/update:
+    post:
+      tags: [regions]
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      responses:
+        "202":
+          description: Update job queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string }
+
+  /api/regions/{name}/schedule:
+    put:
+      tags: [regions]
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [schedule]
+              properties:
+                schedule: { $ref: '#/components/schemas/RegionSchedule' }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Region' }
+
+  # --- JOBS ----------------------------------------------------------
+  /api/jobs/{jobId}:
+    get:
+      tags: [jobs]
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Job.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        "404":
+          $ref: '#/components/responses/Error'
+
+  /api/ws:
+    get:
+      tags: [jobs]
+      summary: WebSocket for region + job events.
+      description: |
+        Client → server:
+          { "type": "subscribe", "channel": "region.europe-romania" }
+          { "type": "subscribe", "channel": "job.<id>" }
+          { "type": "unsubscribe", "channel": "..." }
+
+        Server → client:
+          { "type": "region.progress", "data": Region }
+          { "type": "region.ready",    "data": Region }
+          { "type": "region.failed",   "data": Region }
+          { "type": "job.started",     "data": Job }
+          { "type": "job.progress",    "data": Job }
+          { "type": "job.complete",    "data": Job }
+          { "type": "job.failed",      "data": Job }
+      responses:
+        "101":
+          description: Switching Protocols.
+
+  # --- SETTINGS ------------------------------------------------------
+  /api/settings:
+    get:
+      tags: [settings]
+      security: [{ sessionAuth: [] }]
+      responses:
+        "200":
+          description: Full settings tree.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SettingsTree' }
+    put:
+      tags: [settings]
+      security: [{ sessionAuth: [] }]
+      summary: Replace entire settings tree (validated against schema).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SettingsTree' }
+      responses:
+        "200":
+          description: Replaced.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SettingsTree' }
+        "400":
+          $ref: '#/components/responses/Error'
+    patch:
+      tags: [settings]
+      security: [{ sessionAuth: [] }]
+      summary: Deep-merge partial settings.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SettingsTree' }
+      responses:
+        "200":
+          description: Merged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SettingsTree' }
+
+  /api/settings/schema:
+    get:
+      tags: [settings]
+      summary: JSON schema for UI form generation (anonymous).
+      responses:
+        "200":
+          description: Schema + version wrapper.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SettingsSchemaResponse' }
+
+  # --- SHARE ---------------------------------------------------------
+  /api/links:
+    post:
+      tags: [share]
+      summary: Create a short link.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShortLink' }
+
+  /api/links/{code}:
+    get:
+      tags: [share]
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+      responses:
+        "301":
+          description: Redirect to target URL.
+        "404":
+          $ref: '#/components/responses/Error'
+
+  /og/preview.png:
+    get:
+      tags: [share]
+      summary: Server-rendered OpenGraph PNG of a map state.
+      parameters:
+        - in: query
+          name: lat
+          required: true
+          schema: { type: number }
+        - in: query
+          name: lon
+          required: true
+          schema: { type: number }
+        - in: query
+          name: zoom
+          schema: { type: integer, default: 12, minimum: 0, maximum: 20 }
+        - in: query
+          name: pin
+          schema: { type: boolean, default: true }
+        - in: query
+          name: width
+          schema: { type: integer, default: 1200, minimum: 320, maximum: 2048 }
+        - in: query
+          name: height
+          schema: { type: integer, default: 630, minimum: 200, maximum: 2048 }
+        - in: query
+          name: style
+          schema:
+            type: string
+            enum: [light, dark, auto, print]
+            default: light
+        - in: query
+          name: region
+          description: Canonical hyphenated region key (e.g. `europe-romania`).
+          schema:
+            type: string
+            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+            maxLength: 64
+      responses:
+        "200":
+          description: PNG bytes.
+          content:
+            image/png: {}
+
+  /embed:
+    get:
+      tags: [share]
+      summary: Minimal HTML viewer for iframe embedding.
+      parameters:
+        - in: query
+          name: lat
+          schema: { type: number }
+        - in: query
+          name: lon
+          schema: { type: number }
+        - in: query
+          name: zoom
+          schema: { type: integer, minimum: 0, maximum: 22 }
+        - in: query
+          name: pin
+          description: >-
+            Drop a pin at `lat,lon` with an optional label, e.g.
+            `44.42,26.10:Bucharest`.
+          schema:
+            type: string
+            pattern: "^-?\\d+(\\.\\d+)?,-?\\d+(\\.\\d+)?(:[^\\s]{1,64})?$"
+        - in: query
+          name: style
+          schema:
+            type: string
+            enum: [light, dark, print]
+            default: light
+        - in: query
+          name: region
+          description: Canonical hyphenated region key (e.g. `europe-romania`).
+          schema:
+            type: string
+            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+            maxLength: 64
+      responses:
+        "200":
+          description: HTML embed viewer.
+          content:
+            text/html: {}
+        "307":
+          description: Redirect to the UI origin when `LOCALMAPS_UI_ORIGIN` is set.
+        "400":
+          description: Malformed query parameter.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  # --- META ----------------------------------------------------------
+  /api/health:
+    get:
+      tags: [meta]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+
+  /api/ready:
+    get:
+      tags: [meta]
+      responses:
+        "200":
+          description: Readiness.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  services:
+                    type: object
+                    properties:
+                      redis: { type: boolean }
+                      pmtiles: { type: boolean }
+                      valhalla: { type: boolean }
+                      pelias: { type: boolean }
+
+  /api/version:
+    get:
+      tags: [meta]
+      responses:
+        "200":
+          description: Build info.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: string }
+                  commit: { type: string }
+                  builtAt: { type: string }
+
+  /metrics:
+    get:
+      tags: [meta]
+      summary: Prometheus metrics.
+      responses:
+        "200":
+          description: text/plain metrics.
+          content:
+            text/plain: {}
+
+  # --- AUTH ----------------------------------------------------------
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: Create a session via username + password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, minLength: 1 }
+                password: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Session cookie set; returns the authenticated user.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthMeResponse' }
+        "401":
+          $ref: '#/components/responses/Error'
+        "429":
+          $ref: '#/components/responses/Error'
+
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke the current session cookie.
+      responses:
+        "200":
+          description: Session revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+
+  /api/auth/me:
+    get:
+      tags: [auth]
+      summary: Current authenticated user.
+      security: [{ sessionAuth: [] }]
+      responses:
+        "200":
+          description: User.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthMeResponse' }
+        "401":
+          $ref: '#/components/responses/Error'
+
+  /api/auth/change-password:
+    post:
+      tags: [auth]
+      summary: Change the current user's password.
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [oldPassword, newPassword]
+              properties:
+                oldPassword: { type: string }
+                newPassword: { type: string }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "400":
+          $ref: '#/components/responses/Error'
+        "401":
+          $ref: '#/components/responses/Error'
+
+  /api/auth/users:
+    get:
+      tags: [auth]
+      summary: List all users (admin-only).
+      security: [{ sessionAuth: [] }]
+      responses:
+        "200":
+          description: Users.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuthUser' }
+        "403":
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [auth]
+      summary: Create a user (admin-only).
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, minLength: 1 }
+                password: { type: string, minLength: 1 }
+                role:
+                  type: string
+                  enum: [admin, viewer]
+                  default: admin
+      responses:
+        "201":
+          description: User created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthMeResponse' }
+        "400":
+          $ref: '#/components/responses/Error'
+        "403":
+          $ref: '#/components/responses/Error'
+
+  /api/auth/users/{id}:
+    delete:
+      tags: [auth]
+      summary: Delete a user (admin-only).
+      security: [{ sessionAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "403":
+          $ref: '#/components/responses/Error'

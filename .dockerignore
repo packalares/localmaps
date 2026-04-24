@@ -1,0 +1,51 @@
+# --- VCS + editor ---
+.git
+.gitignore
+.gitattributes
+.github
+.vscode
+.idea
+*.swp
+
+# --- Node / UI build artifacts ---
+**/node_modules
+**/.next
+**/.turbo
+**/dist
+**/out
+**/.cache
+
+# --- Go build artifacts ---
+**/*.test
+**/*.out
+**/coverage.out
+**/vendor
+
+# --- Local runtime state (mounted at runtime, never baked in) ---
+data
+deploy/data
+e2e/data
+test/data
+test/fixtures
+
+# --- Deploy artifacts we do not want in build context ---
+deploy/chart
+deploy/*.tgz
+
+# --- Dockerfiles themselves (avoid rebuild loops on edits) ---
+**/Dockerfile*
+.dockerignore
+
+# --- Docs (do not ship into images) ---
+# Keep README.md so image metadata / labels can reference it.
+**/*.md
+!README.md
+
+# --- Env / secrets ---
+.env
+.env.*
+!deploy/.env.example
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db

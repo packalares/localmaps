@@ -1,0 +1,38 @@
+{
+  "acceptLanguage": true,
+  "api": {
+    "indexName": "pelias-europe-romania-20260424",
+    "languages": [
+      "en"
+    ]
+  },
+  "esclient": {
+    "apiVersion": "7.5",
+    "hosts": [
+      {
+        "host": "pelias-es",
+        "port": 9200,
+        "protocol": "http"
+      }
+    ],
+    "keepAlive": false
+  },
+  "imports": {
+    "adminLookup": {
+      "enabled": false
+    },
+    "openstreetmap": {
+      "datapath": "/data",
+      "import": [
+        {
+          "filename": "source.osm.pbf"
+        }
+      ],
+      "leveldbpath": "/data/tmp"
+    }
+  },
+  "logger": {
+    "level": "info",
+    "timestamp": true
+  }
+}

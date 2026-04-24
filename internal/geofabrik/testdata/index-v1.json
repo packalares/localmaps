@@ -1,0 +1,55 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "europe",
+        "parent": "",
+        "name": "Europe",
+        "urls": {
+          "pbf": "https://download.geofabrik.de/europe-latest.osm.pbf",
+          "md5": "https://download.geofabrik.de/europe-latest.osm.pbf.md5"
+        }
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "romania",
+        "parent": "europe",
+        "name": "Romania",
+        "iso3166-1:alpha2": ["RO"],
+        "urls": {
+          "pbf": "https://download.geofabrik.de/europe/romania-latest.osm.pbf",
+          "md5": "https://download.geofabrik.de/europe/romania-latest.osm.pbf.md5"
+        }
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "germany",
+        "parent": "europe",
+        "name": "Germany",
+        "iso3166-1:alpha2": ["DE"],
+        "urls": {
+          "pbf": "https://download.geofabrik.de/europe/germany-latest.osm.pbf",
+          "md5": "https://download.geofabrik.de/europe/germany-latest.osm.pbf.md5"
+        }
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "germany/baden-wuerttemberg",
+        "parent": "germany",
+        "name": "Baden-Württemberg",
+        "urls": {
+          "pbf": "https://download.geofabrik.de/europe/germany/baden-wuerttemberg-latest.osm.pbf",
+          "md5": "https://download.geofabrik.de/europe/germany/baden-wuerttemberg-latest.osm.pbf.md5"
+        }
+      }
+    }
+  ]
+}

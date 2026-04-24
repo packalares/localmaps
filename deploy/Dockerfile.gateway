@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1.7
+#
+# LocalMaps — Gateway image.
+#
+# Stage 1: compile the Go binary from ./server/cmd/localmaps (per
+#          docs/01-architecture.md, the gateway entrypoint lives there).
+# Stage 2: minimal alpine runtime, non-root user, no build tooling.
+#
+# modernc.org/sqlite is pure Go (no libsqlite3 dependency), so we build
+# with CGO_ENABLED=0 and produce a fully static binary. See
+# docs/02-stack.md which pins `modernc.org/sqlite`.
+
+# ---------- Stage 1: build ----------
+FROM golang:1.23-alpine AS build
+
+# git is needed for `go mod download` when any dependency is fetched
+# directly from a VCS tag. ca-certs for HTTPS module proxy.
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /src
+
+# Copy go.mod + go.sum first for better layer caching. The module lives
+# at the repo-app root (single module; server/ + worker/ are packages
+# under it per the Phase 2 refactor).
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Now copy the source trees the server binary needs.
+COPY server/ ./server/
+COPY internal/ ./internal/
+
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOFLAGS="-trimpath"
+
+# -s -w strips debug info for a smaller binary.
+RUN go build -ldflags="-s -w" -o /out/gateway ./server/cmd/localmaps
+
+# ---------- Stage 2: runtime ----------
+FROM alpine:3.20
+
+# ca-certificates: HTTPS to Geofabrik / Overture.
+# tzdata: zerolog timestamps + cron schedules need zoneinfo.
+# curl: for the container healthcheck.
+RUN apk add --no-cache ca-certificates tzdata curl \
+    && addgroup -g 1000 -S localmaps \
+    && adduser -u 1000 -S localmaps -G localmaps
+
+WORKDIR /app
+
+COPY --from=build /out/gateway /app/gateway
+# Supervisor PID 1: re-execs the binary if it exits (production) and
+# prefers /live/gateway when present (dev hot-reload — mount a
+# hostPath at /live to ship a fresh build without an image rebuild).
+COPY deploy/entrypoint.sh /app/entrypoint.sh
+
+# /data is the single persistence path (docs/04-data-model.md).
+# The runtime mount provides the real storage; we pre-create the dir
+# so a missing volume still yields a writable path for a first boot.
+RUN chmod +x /app/entrypoint.sh \
+    && mkdir -p /data /live \
+    && chown -R localmaps:localmaps /app /data /live
+
+USER 1000:1000
+
+EXPOSE 8080
+
+# docs/07-config-schema.md pins these as the boot-time env defaults.
+# Keep them here so the image is usable without a compose override.
+ENV LOCALMAPS_MODE=gateway \
+    LOCALMAPS_DATA_DIR=/data \
+    LOCALMAPS_LISTEN_ADDR=:8080 \
+    LOCALMAPS_LOG_LEVEL=info
+
+ENTRYPOINT ["/app/entrypoint.sh", "gateway"]

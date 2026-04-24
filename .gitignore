@@ -1,0 +1,53 @@
+# Build artefacts
+bin/
+dist/
+*.exe
+
+# Runtime data (hostPath mount target)
+data/
+.data/
+
+# Large source extracts — fetched at test time; never commit binaries.
+*.osm.pbf
+!test/fixtures/monaco.osm.pbf
+
+# Coverage + test reports
+coverage-report/
+test-results/
+*.lcov
+
+# Go
+*.test
+*.out
+coverage.out
+
+# Node
+node_modules/
+.next/
+.pnpm-store/
+.turbo/
+
+# TypeScript
+*.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Env / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Logs
+*.log
+
+# Local-only dev scripts (contain SSH creds + private infra topology).
+# Keep everything under scripts/ out of git forever.
+scripts/
+
+# Local-only: design docs + test fixtures not shipped to the public repo.
+docs/
+test/

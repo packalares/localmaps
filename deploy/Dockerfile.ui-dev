@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1.7
+#
+# LocalMaps — UI DEV image.
+#
+# Unlike Dockerfile.ui (which ships a production `npm start`), this
+# image runs `npm run dev` so Next.js compiles on the fly and picks up
+# hot-reload from a bind-mounted source tree.
+#
+# Intended use: set `dev.enabled=true` in the chart values. The chart
+# then swaps `ui` → `ui-dev` and mounts `<dev.hostPath>/ui/` from the
+# node over `/src/ui/` in this container. Every rsync into that
+# hostPath triggers HMR in the browser.
+#
+# This image is NOT pushed to GHCR by the release workflow — it's
+# built on the node (or pulled on first use) and stays dev-only.
+
+FROM node:20-alpine
+
+RUN apk add --no-cache bash rsync \
+    && addgroup -g 1000 -S localmaps \
+    && adduser -u 1000 -S localmaps -G localmaps
+
+WORKDIR /src
+
+# Bake the deps so `npm run dev` starts fast; they're overlaid by the
+# hostPath mount at runtime but present here for a first-boot before
+# the mount has node_modules.
+COPY ui/package.json ui/package-lock.json ./ui/
+COPY contracts/ ./contracts/
+
+WORKDIR /src/ui
+RUN npm ci --include=dev
+
+# Full source copy — same lineage as Dockerfile.ui. Runtime hostPath
+# mount overlays this with the live copy.
+WORKDIR /src
+COPY ui/ ./ui/
+
+WORKDIR /src/ui
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NODE_ENV=development \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
+
+RUN chown -R localmaps:localmaps /src
+USER 1000:1000
+
+EXPOSE 3000
+
+# `npm run dev` is watch-mode; file changes under /src/ui trigger HMR.
+CMD ["npm", "run", "dev"]

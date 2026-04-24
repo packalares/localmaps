@@ -1,0 +1,134 @@
+# syntax=docker/dockerfile:1.7
+#
+# LocalMaps — Worker image.
+#
+# The worker shells out to three build tools at runtime:
+#   1. Planetiler — Java JAR downloaded on-demand (JarCache); needs a JRE.
+#   2. Valhalla — `valhalla_build_admins / _timezones / _tiles / _extract`
+#      native binaries copied from the upstream gis-ops image.
+#   3. Pelias openstreetmap importer — invoked via `docker run` against
+#      the pinned `search.peliasImporterImage` tag. Needs `docker` on
+#      PATH in this image.
+#
+# Base image is eclipse-temurin (Debian-based) so the valhalla native
+# binaries find their shared libs without manual compilation. Each
+# tagged image still needs a SHA-256 pin before prod rollout
+# (docs/08-security.md). Tags tracked:
+#   - ghcr.io/gis-ops/docker-valhalla/valhalla:3.5.1   — source of binaries.
+#   - eclipse-temurin:21-jre-jammy                     — runtime base.
+#   - docker.io/docker:27-cli                          — `docker` binary.
+
+# ---------- Stage 1: build the Go worker binary ----------
+FROM golang:1.23-bookworm AS go-build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+# Repository layout has a single root-level go.mod (not per-subtree).
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOFLAGS="-trimpath"
+
+RUN go build -ldflags="-s -w" -o /out/worker ./worker/cmd/worker
+
+# ---------- Stage 2: extract valhalla binaries ----------
+# The gis-ops image ships the build tools at /usr/local/bin. We copy
+# them wholesale into the runtime image. The image also bundles the
+# shared libs the binaries link against under /usr/local/lib and
+# /usr/lib — we copy the most commonly needed ones; any missing lib
+# will surface at first-run (documented in scripts/verify-pipeline.sh).
+#
+# TODO: pin SHA before prod.
+FROM ghcr.io/gis-ops/docker-valhalla/valhalla:3.5.1 AS valhalla
+
+# ---------- Stage 3: fetch docker CLI ----------
+# The worker invokes `docker run pelias/openstreetmap:...` at geocoding
+# time (handlers_agent_h.go). The dev-compose path mounts the docker
+# socket; under Kubernetes this path is NEEDED — see agent report.
+#
+# TODO: pin SHA before prod.
+FROM docker:27-cli AS dockercli
+
+# ---------- Stage 4: runtime ----------
+FROM eclipse-temurin:21-jre-jammy
+
+# Build-time args kept explicit so a future multi-arch build can switch
+# binary locations without guessing.
+ARG VALHALLA_BIN_DIR=/usr/local/bin
+ARG VALHALLA_LIB_DIR=/usr/local/lib
+
+# System packages:
+#   - ca-certificates      — HTTPS egress (Geofabrik, GitHub jar).
+#   - curl + netcat (nc)   — healthcheck (redis probe).
+#   - libsqlite3-0         — valhalla_build_admins persists via sqlite.
+#   - libzmq5, libcurl4    — valhalla runtime deps (commonly dynamically
+#     linked by 3.5.1; installed here so `valhalla_build_tiles`
+#     loads without a fresh debian libs hunt).
+#   - libluajit-5.1-2      — required by valhalla_build_tiles.
+#   - libprotobuf-lite23   — protobuf runtime used by valhalla.
+#   - libspatialite7       — valhalla_build_admins pulls from sqlite+spatialite.
+#
+# `apt-get install --no-install-recommends` keeps the image lean; any
+# runtime-only lib that's still missing will show up in verify-pipeline.sh.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        netcat-openbsd \
+        libsqlite3-0 \
+        libzmq5 \
+        libcurl4 \
+        libluajit-5.1-2 \
+        libprotobuf-lite23 \
+        libspatialite7 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 localmaps \
+    && useradd -u 1000 -g 1000 -M -s /usr/sbin/nologin localmaps
+
+# Valhalla binaries + any companion libs the gis-ops image ships.
+COPY --from=valhalla ${VALHALLA_BIN_DIR}/valhalla_build_admins     /usr/local/bin/valhalla_build_admins
+COPY --from=valhalla ${VALHALLA_BIN_DIR}/valhalla_build_timezones  /usr/local/bin/valhalla_build_timezones
+COPY --from=valhalla ${VALHALLA_BIN_DIR}/valhalla_build_tiles      /usr/local/bin/valhalla_build_tiles
+COPY --from=valhalla ${VALHALLA_BIN_DIR}/valhalla_build_extract    /usr/local/bin/valhalla_build_extract
+# Valhalla often ships its C++ runtime helper libs under /usr/local/lib;
+# copy the directory wholesale. Overlaying onto the Debian runtime is
+# safe because Valhalla's libs are versioned (libvalhalla.so.X).
+COPY --from=valhalla ${VALHALLA_LIB_DIR}/ /usr/local/lib/
+RUN ldconfig
+
+# docker CLI — used by pelias StageWork to run the importer image.
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+
+# Worker binary.
+WORKDIR /app
+COPY --from=go-build /out/worker /app/worker
+# Same supervisor pattern as the gateway — see deploy/entrypoint.sh.
+COPY deploy/entrypoint.sh /app/entrypoint.sh
+
+RUN chmod +x /app/entrypoint.sh \
+    && mkdir -p /data /live \
+    && chown -R localmaps:localmaps /app /data /live
+
+USER 1000:1000
+
+# Worker has no HTTP listener — the healthcheck probes Redis over TCP
+# using the URL the worker itself uses. LOCALMAPS_REDIS_URL defaults to
+# `redis://redis:6379/0` (docs/07-config-schema.md).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=4 \
+    CMD sh -c 'host=$(printf "%s\n" "$LOCALMAPS_REDIS_URL" | sed -e "s#redis://##" -e "s#/.*##" -e "s/:.*//") ; \
+               port=$(printf "%s\n" "$LOCALMAPS_REDIS_URL" | sed -e "s#redis://##" -e "s#/.*##" | awk -F: "{print \$2}") ; \
+               test -n "$host" || host=redis ; test -n "$port" || port=6379 ; \
+               nc -z "$host" "$port"'
+
+ENV LOCALMAPS_MODE=worker \
+    LOCALMAPS_DATA_DIR=/data \
+    LOCALMAPS_LOG_LEVEL=info
+
+ENTRYPOINT ["/app/entrypoint.sh", "worker"]

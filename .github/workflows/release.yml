@@ -1,0 +1,425 @@
+# LocalMaps — Release workflow (Phase 8 / Agent Z).
+#
+# Builds and publishes the gateway + worker (+ optional UI) container
+# images to GHCR, then bumps deploy/chart/values.yaml to point at the
+# new short-SHA and commits the bump back to main so the Helm chart
+# ships a pinned image reference.
+#
+# Triggered by:
+#   - push to main that touches server/ | worker/ | ui/ | deploy/
+#     (path filter; doc-only and test-only commits don't rebuild).
+#   - workflow_dispatch for manual promotions.
+#   - push of a semver tag (v*.*.*) — also creates a GitHub Release.
+#
+# Why a separate workflow (not folded into ci.yml):
+#   CI gates PRs + every push; release pushes artefacts. Tightly
+#   scoped perms per job keeps least-privilege sane.
+#
+# Related files:
+#   - deploy/Dockerfile.gateway     — gateway image build context.
+#   - deploy/Dockerfile.worker      — worker image build context.
+#   - deploy/Dockerfile.ui          — UI image build context (optional).
+#
+# R8 note (agent-rules): GHCR is the only allow-listed registry; no
+# other URLs are called. GITHUB_TOKEN is the only credential used.
+#
+# Action pinning (R15-ish hardening): every non-`actions/*` action is
+# pinned to a commit SHA with the tagged version in a trailing comment
+# for human audit. `actions/*` first-party actions keep the SHA-pin as
+# well.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "worker/**"
+      - "ui/**"
+      - "contracts/**"
+      - "deploy/**"
+      - ".github/workflows/release.yml"
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Override image tag (defaults to sha-<short-sha>)"
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel an in-flight release — partial image pushes to GHCR
+  # can leave the registry in an inconsistent state.
+  cancel-in-progress: false
+
+# Per-repo fork guard. Forks inherit workflows by default; without
+# this every forked push would try (and fail) to push to our GHCR org.
+# The owner is read from a repo Var (Settings → Secrets and variables
+# → Actions → Variables) named RELEASE_OWNER, falling back to the
+# literal "packalares" when unset so forks see an obvious mismatch.
+env:
+  RELEASE_OWNER: ${{ vars.RELEASE_OWNER || 'packalares' }}
+  # Registry is locked per docs/08-security.md; no other URL is dialed.
+  REGISTRY: ghcr.io
+  GATEWAY_IMAGE: localmaps-gateway
+  WORKER_IMAGE: localmaps-worker
+  UI_IMAGE: localmaps-ui
+
+jobs:
+  # --------------------------------------------------------------------
+  # Compute metadata once so every downstream job agrees on the tag set.
+  # --------------------------------------------------------------------
+  meta:
+    name: Compute tags
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'packalares' || github.event_name == 'workflow_dispatch' }}
+    outputs:
+      short_sha: ${{ steps.ids.outputs.short_sha }}
+      sha_tag: ${{ steps.ids.outputs.sha_tag }}
+      semver: ${{ steps.ids.outputs.semver }}
+      is_tag: ${{ steps.ids.outputs.is_tag }}
+      is_main: ${{ steps.ids.outputs.is_main }}
+      created: ${{ steps.ids.outputs.created }}
+      ui_dockerfile_present: ${{ steps.ui.outputs.present }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          fetch-depth: 0
+      - id: ids
+        name: Derive tag metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="$(git rev-parse --short=7 HEAD)"
+          sha_tag="sha-${short_sha}"
+          created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          if [[ "${GITHUB_REF}" == refs/tags/v*.*.* ]]; then
+              semver="${GITHUB_REF#refs/tags/}"
+              is_tag=true
+          else
+              semver=""
+              is_tag=false
+          fi
+          if [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+              is_main=true
+          else
+              is_main=false
+          fi
+          # workflow_dispatch tag override lands in sha_tag so every
+          # downstream job sees it uniformly.
+          override="${{ github.event.inputs.tag }}"
+          if [[ -n "${override}" ]]; then
+              sha_tag="${override}"
+          fi
+          {
+              echo "short_sha=${short_sha}"
+              echo "sha_tag=${sha_tag}"
+              echo "semver=${semver}"
+              echo "is_tag=${is_tag}"
+              echo "is_main=${is_main}"
+              echo "created=${created}"
+          } >> "$GITHUB_OUTPUT"
+      - id: ui
+        name: Detect optional UI Dockerfile
+        shell: bash
+        run: |
+          if [[ -f deploy/Dockerfile.ui ]]; then
+              echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+              echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # --------------------------------------------------------------------
+  # Shared image build via matrix. Keeps the YAML DRY (R7).
+  # Gateway + worker are mandatory; the optional UI image runs as a
+  # separate job (`build-ui-image`) so its `if:` can gate on a `needs`
+  # output (matrix contexts aren't available to a job-level `if:`).
+  # --------------------------------------------------------------------
+  build-images:
+    name: Build ${{ matrix.image.name }}
+    needs: meta
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: localmaps-gateway
+            dockerfile: deploy/Dockerfile.gateway
+          - name: localmaps-worker
+            dockerfile: deploy/Dockerfile.worker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          # No submodules; no LFS. Planetiler / Geofabrik assets are
+          # runtime-fetched (R8 allow-list note), NOT pulled at build
+          # time, so a shallow checkout is fine.
+          fetch-depth: 1
+
+      - name: Set up QEMU
+        # Enables arm64 emulation on amd64 runners for multi-arch build.
+        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3.2.0
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tag list
+        id: tags
+        shell: bash
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          OWNER: ${{ env.RELEASE_OWNER }}
+          IMAGE: ${{ matrix.image.name }}
+          SHA_TAG: ${{ needs.meta.outputs.sha_tag }}
+          SEMVER: ${{ needs.meta.outputs.semver }}
+          IS_TAG: ${{ needs.meta.outputs.is_tag }}
+          IS_MAIN: ${{ needs.meta.outputs.is_main }}
+        run: |
+          set -euo pipefail
+          base="${REGISTRY}/${OWNER}/${IMAGE}"
+          tags=("${base}:${SHA_TAG}")
+          # `latest` only on a clean main push (not on manual dispatch
+          # from a branch, not on a tag alone).
+          if [[ "${IS_MAIN}" == "true" ]]; then
+              tags+=("${base}:latest")
+          fi
+          # Semver tag on `v*.*.*` refs.
+          if [[ "${IS_TAG}" == "true" && -n "${SEMVER}" ]]; then
+              tags+=("${base}:${SEMVER}")
+          fi
+          # docker/build-push-action wants newline-separated tags.
+          {
+              echo "tags<<EOF"
+              printf '%s\n' "${tags[@]}"
+              echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.image.name }}
+        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
+          # OCI image labels — docs/10-deploy.md calls for these so
+          # operators can trace an image back to a commit.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.meta.outputs.semver || needs.meta.outputs.sha_tag }}
+            org.opencontainers.image.created=${{ needs.meta.outputs.created }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.title=${{ matrix.image.name }}
+            org.opencontainers.image.description=LocalMaps ${{ matrix.image.name }} container
+          # BuildKit layer cache keyed per image so gateway/worker
+          # builds don't evict each other.
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}
+
+  # --------------------------------------------------------------------
+  # Optional UI image — runs only when deploy/Dockerfile.ui exists.
+  # Split out from the matrix above because GitHub Actions does not
+  # expose `matrix.*` in a job-level `if:` expression.
+  # --------------------------------------------------------------------
+  build-ui-image:
+    name: Build localmaps-ui
+    needs: meta
+    runs-on: ubuntu-latest
+    if: needs.meta.outputs.ui_dockerfile_present == 'true'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          fetch-depth: 1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3.2.0
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tag list
+        id: tags
+        shell: bash
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          OWNER: ${{ env.RELEASE_OWNER }}
+          IMAGE: ${{ env.UI_IMAGE }}
+          SHA_TAG: ${{ needs.meta.outputs.sha_tag }}
+          SEMVER: ${{ needs.meta.outputs.semver }}
+          IS_TAG: ${{ needs.meta.outputs.is_tag }}
+          IS_MAIN: ${{ needs.meta.outputs.is_main }}
+        run: |
+          set -euo pipefail
+          base="${REGISTRY}/${OWNER}/${IMAGE}"
+          tags=("${base}:${SHA_TAG}")
+          if [[ "${IS_MAIN}" == "true" ]]; then
+              tags+=("${base}:latest")
+          fi
+          if [[ "${IS_TAG}" == "true" && -n "${SEMVER}" ]]; then
+              tags+=("${base}:${SEMVER}")
+          fi
+          {
+              echo "tags<<EOF"
+              printf '%s\n' "${tags[@]}"
+              echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push localmaps-ui
+        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        with:
+          context: .
+          file: deploy/Dockerfile.ui
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.meta.outputs.semver || needs.meta.outputs.sha_tag }}
+            org.opencontainers.image.created=${{ needs.meta.outputs.created }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.title=localmaps-ui
+            org.opencontainers.image.description=LocalMaps UI (optional; gateway serves embedded UI by default)
+          cache-from: type=gha,scope=localmaps-ui
+          cache-to: type=gha,mode=max,scope=localmaps-ui
+
+      # Dev-mode variant (npm run dev + HMR). Chart pulls this when
+      # values.dev.enabled=true. amd64-only to save CI time; dev is
+      # single-node.
+      - name: Compute ui-dev tags
+        id: tags_dev
+        shell: bash
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          OWNER: ${{ env.RELEASE_OWNER }}
+          SHA_TAG: ${{ needs.meta.outputs.sha_tag }}
+          IS_MAIN: ${{ needs.meta.outputs.is_main }}
+        run: |
+          set -euo pipefail
+          base="${REGISTRY}/${OWNER}/localmaps-ui-dev"
+          tags=("${base}:${SHA_TAG}")
+          [[ "${IS_MAIN}" == "true" ]] && tags+=("${base}:latest")
+          {
+              echo "tags<<EOF"
+              printf '%s\n' "${tags[@]}"
+              echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push localmaps-ui-dev
+        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        with:
+          context: .
+          file: deploy/Dockerfile.ui-dev
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags_dev.outputs.tags }}
+          provenance: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=localmaps-ui-dev
+            org.opencontainers.image.description=LocalMaps UI dev image (npm run dev + HMR)
+          cache-from: type=gha,scope=localmaps-ui-dev
+          cache-to: type=gha,mode=max,scope=localmaps-ui-dev
+
+  # --------------------------------------------------------------------
+  # Bump deploy/chart/values.yaml → image.tag = new sha, commit back to
+  # main (skip-ci marker so we don't infinite-loop on our own push).
+  #
+  # Runs only on a main-branch push / workflow_dispatch that landed a
+  # new sha tag. Tag pushes don't bump — semver tags are applied as
+  # image tags directly, not written into the chart.
+  # --------------------------------------------------------------------
+  # Chart packaging + market publishing lives in the packalares market
+  # repo, not here. The app repo ships images; the market repo pulls
+  # them in via its catalog.json entry.
+
+  # --------------------------------------------------------------------
+  # Cut a GitHub Release on semver tag push. Skips on plain pushes and
+  # workflow_dispatch.
+  # --------------------------------------------------------------------
+  create-release:
+    name: Create GitHub Release
+    needs: [meta, build-images]
+    runs-on: ubuntu-latest
+    if: needs.meta.outputs.is_tag == 'true'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          fetch-depth: 0
+
+      - name: Build changelog
+        id: log
+        shell: bash
+        env:
+          TAG: ${{ needs.meta.outputs.semver }}
+        run: |
+          set -euo pipefail
+          prev="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          if [[ -n "${prev}" ]]; then
+              range="${prev}..${TAG}"
+              header="Changes since ${prev}"
+          else
+              range="${TAG}"
+              header="Initial release"
+          fi
+          {
+              echo "## ${header}"
+              echo
+              git log --no-merges --pretty=format:'- %s (%h)' "${range}"
+              echo
+              echo
+              echo "## Images"
+              echo
+              echo "- \`${REGISTRY}/${RELEASE_OWNER}/${GATEWAY_IMAGE}:${TAG}\`"
+              echo "- \`${REGISTRY}/${RELEASE_OWNER}/${WORKER_IMAGE}:${TAG}\`"
+          } > release-body.md
+          {
+              echo "body<<EOF"
+              cat release-body.md
+              echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
+        with:
+          tag_name: ${{ needs.meta.outputs.semver }}
+          name: ${{ needs.meta.outputs.semver }}
+          body: ${{ steps.log.outputs.body }}
+          draft: false
+          prerelease: false

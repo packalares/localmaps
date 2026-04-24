@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Route abc-123</name>
+    <atom:author xmlns:atom="http://www.w3.org/2005/Atom"><atom:name>LocalMaps 0.1.0-test</atom:name></atom:author>
+    <Style id="route">
+      <LineStyle>
+        <color>ff2b85ec</color>
+        <width>6</width>
+      </LineStyle>
+    </Style>
+    <Placemark>
+      <name>Start</name>
+      <Point>
+        <coordinates>2.000000,1.000000,0</coordinates>
+      </Point>
+    </Placemark>
+    <Placemark>
+      <name>End</name>
+      <Point>
+        <coordinates>2.000001,1.000001,0</coordinates>
+      </Point>
+    </Placemark>
+    <Placemark>
+      <name>Leg 1</name>
+      <styleUrl>#route</styleUrl>
+      <LineString>
+        <tessellate>1</tessellate>
+        <coordinates>2.000000,1.000000,0 2.000001,1.000001,0</coordinates>
+      </LineString>
+    </Placemark>
+  </Document>
+</kml>

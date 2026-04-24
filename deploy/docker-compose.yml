@@ -1,0 +1,240 @@
+# LocalMaps — docker-compose stack (self-hosted, single-host).
+#
+# Mirrors the Helm chart shape described in docs/10-deploy.md: same
+# ports, same env var contract (docs/07-config-schema.md), same volume
+# layout (docs/04-data-model.md). The only externally published port
+# is the gateway's 8080; every other service is compose-network-only.
+#
+# See deploy/README.md for how to run this.
+
+name: localmaps
+
+# Shared anchors --------------------------------------------------------------
+# Every downstream Go service gets the same boot-time env surface. Keep this
+# in lock-step with docs/07-config-schema.md (and deploy/.env.example).
+x-gateway-env: &gateway-env
+  LOCALMAPS_DATA_DIR: /data
+  LOCALMAPS_LISTEN_ADDR: ":8080"
+  LOCALMAPS_REDIS_URL: redis://redis:6379/0
+  LOCALMAPS_PROTOMAPS_URL: http://protomaps:8000
+  LOCALMAPS_VALHALLA_URL: http://valhalla:8002
+  LOCALMAPS_PELIAS_URL: http://pelias-api:4000
+  LOCALMAPS_LOG_LEVEL: info
+  LOCALMAPS_TRUST_PROXY_HEADERS: "false"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Gateway — Go API + embedded UI. The ONLY service bound to the host.
+  # ---------------------------------------------------------------------------
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    image: localmaps/gateway:dev
+    environment:
+      <<: *gateway-env
+      LOCALMAPS_MODE: gateway
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    networks:
+      - localmaps
+    depends_on:
+      redis:
+        condition: service_healthy
+      protomaps:
+        condition: service_healthy
+      valhalla:
+        condition: service_started
+      pelias-api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Worker — dedicated image (Dockerfile.worker) that bundles:
+  #   - Go worker binary
+  #   - Eclipse Temurin JRE for planetiler
+  #   - valhalla_build_{admins,timezones,tiles,extract} native binaries
+  #   - docker CLI for invoking the pelias importer image
+  # Docker socket is mounted so `pipeline:geocoding` can docker-run the
+  # pelias/openstreetmap importer. NEEDED for prod: replace the docker
+  # socket approach with a sidecar IPC for the Kubernetes chart path.
+  # ---------------------------------------------------------------------------
+  worker:
+    image: localmaps/worker:dev
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    environment:
+      <<: *gateway-env
+      LOCALMAPS_MODE: worker
+    volumes:
+      - ./data:/data
+      # Docker socket: needed so the worker can `docker run pelias/openstreetmap:...`
+      # against the shared `localmaps` network. Dev-only; the chart
+      # uses a different mechanism (see Dockerfile.worker header).
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - localmaps
+    depends_on:
+      gateway:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      protomaps:
+        condition: service_healthy
+      valhalla:
+        condition: service_started
+      pelias-api:
+        condition: service_started
+    healthcheck:
+      # The worker has no HTTP listener; probe Redis over TCP like the
+      # built-in HEALTHCHECK in Dockerfile.worker does. netcat is present
+      # in the runtime image.
+      test: ["CMD-SHELL", "nc -z redis 6379 || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 4
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis — Asynq queue + rate-limit token buckets (docs/02-stack.md).
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.4-alpine
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+    networks:
+      - localmaps
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Protomaps — serves *.pmtiles from /data/regions/<name>/map.pmtiles.
+  # Upstream repo: https://github.com/protomaps/go-pmtiles
+  # TODO: verify pinned digest of protomaps/go-pmtiles against upstream
+  # once network access allows `docker buildx imagetools inspect`.
+  # ---------------------------------------------------------------------------
+  protomaps:
+    image: protomaps/go-pmtiles:v1.22.1
+    # go-pmtiles `serve` takes a directory of pmtiles files.
+    command: ["serve", "/tiles", "--port", "8000", "--interface", "0.0.0.0"]
+    volumes:
+      - ./data/regions:/tiles:ro
+    networks:
+      - localmaps
+    healthcheck:
+      # go-pmtiles exposes a simple HTTP surface at /; any 2xx/4xx means alive.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Valhalla — routing. Upstream image from gis-ops.
+  # TODO: pin to a SHA before prod rollout (docs/08-security.md requires
+  # pinned digests; the tag below is a plausible recent release).
+  # ---------------------------------------------------------------------------
+  valhalla:
+    image: ghcr.io/gis-ops/docker-valhalla/valhalla:3.5.1
+    environment:
+      tile_dir: /data/valhalla
+      # Leave tile building to the worker; start Valhalla read-only.
+      use_tiles_ignore_pbf: "True"
+      build_tar: "False"
+      force_rebuild: "False"
+    volumes:
+      - ./data/regions:/data/valhalla
+    networks:
+      - localmaps
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8002/status >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Pelias Elasticsearch — backing store for the geocoder index.
+  # Pinned to the exact 7.17.x used by Pelias docker compose upstream.
+  # ---------------------------------------------------------------------------
+  pelias-es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.22
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+      xpack.security.enabled: "false"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65535
+        hard: 65535
+    volumes:
+      - ./data/pelias-es:/usr/share/elasticsearch/data
+    networks:
+      - localmaps
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "curl -fsS http://localhost:9200/_cluster/health | grep -Eq '\"status\":\"(green|yellow)\"'"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Pelias API — geocoder frontend.
+  # TODO: pin to a SHA; pelias/api:master is the upstream convention,
+  # we use a dated tag here for reproducibility.
+  # ---------------------------------------------------------------------------
+  pelias-api:
+    image: pelias/api:v6.3.0
+    environment:
+      PELIAS_CONFIG: /config/pelias.json
+      PORT: "4000"
+    volumes:
+      - ./pelias/pelias.json:/config/pelias.json:ro
+    networks:
+      - localmaps
+    depends_on:
+      pelias-es:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/v1/status >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+networks:
+  localmaps:
+    name: localmaps
+    driver: bridge

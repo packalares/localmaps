@@ -1,0 +1,50 @@
+{
+  "name": "@localmaps/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LocalMaps API contracts: OpenAPI source of truth, generated TS types, zod validators for response bodies, WS event types.",
+  "main": "ts/dist/index.js",
+  "types": "ts/dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./ts/dist/index.d.ts",
+      "import": "./ts/dist/index.js"
+    },
+    "./schemas": {
+      "types": "./ts/dist/schemas.d.ts",
+      "import": "./ts/dist/schemas.js"
+    },
+    "./events": {
+      "types": "./ts/dist/events.d.ts",
+      "import": "./ts/dist/events.js"
+    },
+    "./errors": {
+      "types": "./ts/dist/errors.d.ts",
+      "import": "./ts/dist/errors.js"
+    }
+  },
+  "files": [
+    "ts/",
+    "openapi.yaml"
+  ],
+  "scripts": {
+    "lint": "redocly lint openapi.yaml --skip-rule=operation-summary",
+    "typegen": "openapi-typescript openapi.yaml -o ts/api.d.ts",
+    "build": "pnpm run typegen && tsc -p tsconfig.json",
+    "test": "vitest run",
+    "parity": "tsx scripts/check-parity.ts",
+    "check": "pnpm run lint && pnpm run typegen && pnpm run test && pnpm run parity"
+  },
+  "dependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@redocly/cli": "1.34.12",
+    "@vitest/coverage-v8": "4.1.5",
+    "tsx": "4.19.2",
+    "vitest": "4.1.5"
+  }
+}

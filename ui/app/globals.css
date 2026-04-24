@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * LocalMaps theme tokens.
+ *
+ * Inspired by the warmth of the Google Maps desktop chrome, but declared as
+ * our own palette. Light mode uses a near-white off-cream with warm greys;
+ * dark mode uses deep slate with cool accents. All values in hsl so that
+ * Tailwind's `hsl(var(--token))` shorthand works.
+ */
+
+@layer base {
+  :root {
+    --background: 40 33% 98%;
+    --foreground: 220 10% 14%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 10% 14%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 10% 14%;
+
+    --primary: 212 90% 50%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 40 20% 92%;
+    --secondary-foreground: 220 10% 14%;
+
+    --muted: 40 20% 94%;
+    --muted-foreground: 220 6% 42%;
+
+    --accent: 212 90% 50%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 78% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 12% 88%;
+    --input: 220 12% 88%;
+    --ring: 212 90% 50%;
+
+    --chrome-surface: 0 0% 100%;
+    --chrome-border: 220 12% 88%;
+    --chrome-shadow: 220 25% 14%;
+
+    --radius: 0.5rem;
+
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", sans-serif;
+  }
+
+  .dark {
+    --background: 220 18% 10%;
+    --foreground: 40 20% 96%;
+
+    --card: 220 16% 13%;
+    --card-foreground: 40 20% 96%;
+
+    --popover: 220 16% 13%;
+    --popover-foreground: 40 20% 96%;
+
+    --primary: 212 90% 58%;
+    --primary-foreground: 220 20% 8%;
+
+    --secondary: 220 14% 17%;
+    --secondary-foreground: 40 20% 96%;
+
+    --muted: 220 14% 17%;
+    --muted-foreground: 220 8% 65%;
+
+    --accent: 212 90% 58%;
+    --accent-foreground: 220 20% 8%;
+
+    --destructive: 0 70% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 14% 22%;
+    --input: 220 14% 22%;
+    --ring: 212 90% 58%;
+
+    --chrome-surface: 220 16% 13%;
+    --chrome-border: 220 14% 22%;
+    --chrome-shadow: 220 30% 4%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body {
+    @apply h-full;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+  }
+}
+
+@layer utilities {
+  /* The Google-Maps-style floating chrome surface */
+  .chrome-card {
+    @apply rounded-lg bg-chrome-surface text-foreground shadow-chrome ring-1 ring-chrome-border;
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "_comment": "generated from upstream Pelias sample + adapted for LocalMaps; see https://github.com/pelias/api and https://github.com/pelias/docker",
+  "logger": {
+    "level": "info",
+    "timestamp": true
+  },
+  "esclient": {
+    "apiVersion": "7.5",
+    "hosts": [
+      { "host": "pelias-es", "port": 9200, "protocol": "http" }
+    ]
+  },
+  "elasticsearch": {
+    "settings": {
+      "index": {
+        "refresh_interval": "10s",
+        "number_of_replicas": "0",
+        "number_of_shards": "1"
+      }
+    }
+  },
+  "acceptLanguage": true,
+  "api": {
+    "host": "http://pelias-api:4000/",
+    "textAnalyzer": "libpostal",
+    "services": {
+      "libpostal": { "url": "http://libpostal:4400" },
+      "placeholder": { "url": "http://placeholder:4100" },
+      "pip": { "url": "http://pip:4200" }
+    },
+    "defaultParameters": {
+      "focus.point.lat": 0,
+      "focus.point.lon": 0
+    },
+    "localization": {
+      "flipNumberAndStreetCountries": ["DEU", "FRA", "NLD", "ESP"]
+    },
+    "indexName": "pelias"
+  },
+  "imports": {
+    "adminLookup": {
+      "enabled": true
+    },
+    "openstreetmap": {
+      "download": [],
+      "leveldbpath": "/data/tmp",
+      "datapath": "/data/openstreetmap",
+      "import": [
+        { "filename": "source.osm.pbf" }
+      ]
+    },
+    "whosonfirst": {
+      "datapath": "/data/whosonfirst",
+      "countryCode": "US",
+      "importPostalcodes": false,
+      "importVenues": false,
+      "sqlite": true
+    }
+  }
+}
