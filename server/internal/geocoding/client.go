@@ -88,15 +88,18 @@ type Client struct {
 }
 
 // NewClient builds a Client pointing at baseURL (trailing slash stripped).
-// Pass an empty string to fall back to http://pelias-api:4000.
+// Pass an empty string to fall back to the in-pod localhost endpoint.
+// Sidecars in the LocalMaps pod (pelias-api, pelias-es) bind on 127.0.0.1
+// only — the legacy docker-compose service names (`pelias-api`, `pelias-es`)
+// don't resolve under k8s.
 func NewClient(baseURL string) *Client {
 	u := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if u == "" {
-		u = "http://pelias-api:4000"
+		u = "http://127.0.0.1:4000"
 	}
 	return &Client{
 		baseURL: u,
-		esURL:   "http://pelias-es:9200",
+		esURL:   "http://127.0.0.1:9200",
 		http:    &http.Client{Timeout: 20 * time.Second},
 		timeout: 10 * time.Second,
 	}

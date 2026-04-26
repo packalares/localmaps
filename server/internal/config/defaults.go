@@ -37,7 +37,7 @@ func Defaults() []Default {
 		{"search.showHistory", true},
 		{"search.historyRetentionDays", 90},
 		{"search.autocompleteDebounceMs", 150},
-		{"search.peliasElasticUrl", "http://pelias-es:9200"},
+		{"search.peliasElasticUrl", "http://127.0.0.1:9200"},
 		{"search.peliasLanguages", []string{"en"}},
 		{"search.peliasPolylinesEnabled", false},
 		{"search.peliasBuildTimeoutMinutes", 120},

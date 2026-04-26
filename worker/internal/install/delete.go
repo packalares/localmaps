@@ -139,7 +139,7 @@ func shouldPurgePelias(s PeliasURLReader) bool {
 // duplicated here because handlers_agent_h is in package main and we
 // cannot reach across the package boundary. Resolution order:
 // settings.search.peliasElasticUrl → LOCALMAPS_PELIAS_ES_URL env →
-// http://pelias-es:9200.
+// in-pod localhost (sidecars bind to 127.0.0.1 only under k8s).
 func peliasESURL(s PeliasURLReader) string {
 	if s != nil {
 		if raw, err := s.GetString("search.peliasElasticUrl"); err == nil && raw != "" {
@@ -153,7 +153,7 @@ func peliasESURL(s PeliasURLReader) string {
 			return normalised
 		}
 	}
-	return "http://pelias-es:9200"
+	return "http://127.0.0.1:9200"
 }
 
 func normalisePeliasURL(raw string) (string, bool) {

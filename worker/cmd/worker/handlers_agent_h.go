@@ -100,8 +100,9 @@ func geocodingWork(deps ChainDeps) StageWork {
 
 // peliasESURL assembles the Elasticsearch base URL from settings. It
 // prefers settings.search.peliasElasticUrl (as persisted by the admin
-// UI); falls back to LOCALMAPS_PELIAS_ES_URL, then to the docker-compose
-// default http://pelias-es:9200 (docs/07-config-schema.md).
+// UI); falls back to LOCALMAPS_PELIAS_ES_URL, then to the in-pod localhost
+// default. Sidecars bind to 127.0.0.1 only — the docker-compose hostname
+// `pelias-es` doesn't resolve under k8s.
 func peliasESURL(s StageSettings) string {
 	if raw := settingOrDefault(s, "search.peliasElasticUrl", ""); raw != "" {
 		if normalised, ok := normalisePeliasURL(raw); ok {
@@ -113,7 +114,7 @@ func peliasESURL(s StageSettings) string {
 			return normalised
 		}
 	}
-	return "http://pelias-es:9200"
+	return "http://127.0.0.1:9200"
 }
 
 // normalisePeliasURL strips whitespace + trailing slash, sets a default
