@@ -195,7 +195,7 @@ func PurgeRegion(ctx context.Context, esURL, regionKey string, log zerolog.Logge
 		return 0, errors.New("peliasindex: region required")
 	}
 	opts := Options{}.defaulted()
-	deleted, err := bulkDelete(ctx, opts, esURL, regionKey)
+	deleted, err := bulkDelete(ctx, opts, esURL, regionKey, log)
 	if err != nil {
 		return 0, fmt.Errorf("purge region: %w", err)
 	}

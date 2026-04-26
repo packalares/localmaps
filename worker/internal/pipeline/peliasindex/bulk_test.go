@@ -196,7 +196,7 @@ func TestBulkDelete_PostsDeleteByQuery(t *testing.T) {
 	defer srv.Close()
 
 	deleted, err := bulkDelete(context.Background(),
-		Options{}.defaulted(), srv.URL, "europe-romania")
+		Options{}.defaulted(), srv.URL, "europe-romania", zerolog.Nop())
 	require.NoError(t, err)
 	require.Equal(t, int64(42), deleted)
 	require.Equal(t, http.MethodPost, seenMethod)
@@ -211,6 +211,27 @@ func TestBulkDelete_PostsDeleteByQuery(t *testing.T) {
 func TestPurgeRegion_Wraps404AsZero(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	deleted, err := PurgeRegion(context.Background(), srv.URL, "europe-romania", zerolog.Nop())
+	require.NoError(t, err)
+	require.Equal(t, int64(0), deleted)
+}
+
+// TestPurgeRegion_TolersNotIndexedShardException covers the case where
+// the live ES index has the upstream Pelias schema's dynamic_template
+// applied to addendum.* (index:false). The resulting 400 from
+// _delete_by_query must be treated like the 404 case — zero deletions,
+// no error — so the user-visible delete flow doesn't fail loudly.
+func TestPurgeRegion_TolersNotIndexedShardException(t *testing.T) {
+	body := `{"error":{"root_cause":[{"type":"query_shard_exception",` +
+		`"reason":"failed to create query: Cannot search on field ` +
+		`[addendum.osm.region] since it is not indexed.","index_uuid":"x",` +
+		`"index":"pelias"}],"type":"search_phase_execution_exception"},"status":400}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
 

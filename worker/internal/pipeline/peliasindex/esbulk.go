@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/rs/zerolog"
 )
@@ -203,7 +204,17 @@ func bulkIndex(ctx context.Context, opts Options, esURL string, batch []doc) (in
 // body's `deleted` field). 404 on the index is treated as 0 deletions
 // + nil error so a delete on a freshly-installed primary that never
 // imported the region doesn't fail loudly.
-func bulkDelete(ctx context.Context, opts Options, esURL, regionKey string) (int64, error) {
+//
+// 400 with a `Cannot search on field [addendum.osm.region] since it is
+// not indexed` shard exception is also treated as 0 deletions + nil:
+// the upstream Pelias schema's dynamic_template maps every
+// `addendum.*` field to `index:false, doc_values:false` (Pelias itself
+// never queries them, saves space). ES forbids flipping that flag on a
+// live field, so the only "fix" would be a full reindex. Until that
+// happens we accept that per-region purges leak stale docs — adding
+// new docs still works (writes don't depend on the field being
+// indexed), and the user-visible delete flow no longer fails loudly.
+func bulkDelete(ctx context.Context, opts Options, esURL, regionKey string, log zerolog.Logger) (int64, error) {
 	if regionKey == "" {
 		return 0, fmt.Errorf("bulkDelete: empty region key")
 	}
@@ -235,6 +246,12 @@ func bulkDelete(ctx context.Context, opts Options, esURL, regionKey string) (int
 	if resp.StatusCode == http.StatusNotFound {
 		return 0, nil
 	}
+	if resp.StatusCode == http.StatusBadRequest && fieldNotIndexed(respBody, "addendum.osm.region") {
+		log.Warn().
+			Str("region", regionKey).
+			Msg("peliasindex purge skipped: addendum.osm.region not indexed (legacy schema); leaving stale docs in place")
+		return 0, nil
+	}
 	if resp.StatusCode >= 300 {
 		return 0, fmt.Errorf("_delete_by_query status %d: %s",
 			resp.StatusCode, truncate(string(respBody), 200))
@@ -250,6 +267,18 @@ func bulkDelete(ctx context.Context, opts Options, esURL, regionKey string) (int
 		return 0, nil
 	}
 	return parsed.Deleted, nil
+}
+
+// fieldNotIndexed scans an ES error response body for the
+// `query_shard_exception` reason ES emits when a query targets a field
+// whose mapping has `index: false`. Cheaper than parsing the JSON since
+// the message text is stable across ES 7.x.
+func fieldNotIndexed(body []byte, field string) bool {
+	s := string(body)
+	if !strings.Contains(s, "query_shard_exception") {
+		return false
+	}
+	return strings.Contains(s, "Cannot search on field ["+field+"]")
 }
 
 func truncate(s string, n int) string {
