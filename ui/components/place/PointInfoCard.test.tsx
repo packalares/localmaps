@@ -252,7 +252,6 @@ describe("<PointInfoCardHost />", () => {
     const setLngLat = vi.fn().mockReturnThis();
     const remove = vi.fn();
     const markerSpy = vi.spyOn(maplibregl, "Marker").mockImplementation(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (..._args: unknown[]) => {
         return { setLngLat, addTo, remove } as unknown as maplibregl.Marker;
       },
