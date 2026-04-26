@@ -15,7 +15,7 @@
 # tagged image still needs a SHA-256 pin before prod rollout
 # (docs/08-security.md). Tags tracked:
 #   - ghcr.io/gis-ops/docker-valhalla/valhalla:3.5.1   — source of binaries.
-#   - eclipse-temurin:21-jre-jammy                     — runtime base.
+#   - eclipse-temurin:21-jre-noble                     — runtime base.
 #   - docker.io/docker:27-cli                          — `docker` binary.
 
 # ---------- Stage 1: build the Go worker binary ----------
@@ -57,7 +57,7 @@ FROM ghcr.io/gis-ops/docker-valhalla/valhalla:3.5.1 AS valhalla
 FROM docker:27-cli AS dockercli
 
 # ---------- Stage 4: runtime ----------
-FROM eclipse-temurin:21-jre-jammy
+FROM eclipse-temurin:21-jre-noble
 
 # Build-time args kept explicit so a future multi-arch build can switch
 # binary locations without guessing.
@@ -72,8 +72,8 @@ ARG VALHALLA_LIB_DIR=/usr/local/lib
 #     linked by 3.5.1; installed here so `valhalla_build_tiles`
 #     loads without a fresh debian libs hunt).
 #   - libluajit-5.1-2      — required by valhalla_build_tiles.
-#   - libprotobuf-lite23   — protobuf runtime used by valhalla.
-#   - libspatialite7       — valhalla_build_admins pulls from sqlite+spatialite.
+#   - libprotobuf-lite32   — protobuf runtime used by valhalla (noble).
+#   - libspatialite8       — valhalla_build_admins pulls from sqlite+spatialite (noble).
 #
 # `apt-get install --no-install-recommends` keeps the image lean; any
 # runtime-only lib that's still missing will show up in verify-pipeline.sh.
@@ -86,11 +86,19 @@ RUN apt-get update \
         libzmq5 \
         libcurl4 \
         libluajit-5.1-2 \
-        libprotobuf-lite23 \
-        libspatialite7 \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd -g 1000 localmaps \
-    && useradd -u 1000 -g 1000 -M -s /usr/sbin/nologin localmaps
+        libprotobuf-lite32 \
+        libspatialite8 \
+        spatialite-bin \
+        pkg-config \
+        unzip \
+        wget \
+        python3 \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# noble already ships an `ubuntu` user at uid/gid 1000 — reuse it
+# (creating another at the same uid collides). Matches the chart's
+# init-chown target.
 
 # Valhalla binaries + any companion libs the gis-ops image ships.
 COPY --from=valhalla ${VALHALLA_BIN_DIR}/valhalla_build_admins     /usr/local/bin/valhalla_build_admins
@@ -114,7 +122,7 @@ COPY deploy/entrypoint.sh /app/entrypoint.sh
 
 RUN chmod +x /app/entrypoint.sh \
     && mkdir -p /data /live \
-    && chown -R localmaps:localmaps /app /data /live
+    && chown -R ubuntu:ubuntu /app /data /live
 
 USER 1000:1000
 

@@ -12,6 +12,7 @@
   "search.ariaLabel": "Caută pe hartă",
   "search.clear": "Șterge căutarea",
   "search.openMenu": "Deschide meniul",
+  "search.directions": "Obține rute",
   "search.empty.noResults": "Niciun rezultat. Verifică ortografia sau extinde căutarea.",
   "search.empty.prompt": "Caută un oraș, un reper sau o adresă.",
   "search.empty.noRegions": "Instalează o regiune din Admin → Regiuni pentru a căuta offline.",

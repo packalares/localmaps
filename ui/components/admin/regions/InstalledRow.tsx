@@ -1,6 +1,6 @@
 "use client";
 
-import { RefreshCw, Trash2 } from "lucide-react";
+import { Navigation, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -30,7 +30,11 @@ export interface InstalledRowProps {
   onUpdateNow: (region: Region) => void;
   onScheduleChange: (region: Region, next: string) => void;
   onDelete: (region: Region) => void;
-  pendingAction: "update" | "schedule" | "delete" | null;
+  /** Optional: when provided, render a "Use for routing" action. */
+  onActivate?: (region: Region) => void;
+  /** True when this region is the active routing target. */
+  isActiveRouting?: boolean;
+  pendingAction: "update" | "schedule" | "delete" | "activate" | null;
 }
 
 function formatMaybeDate(
@@ -52,15 +56,34 @@ export function InstalledRow({
   onUpdateNow,
   onScheduleChange,
   onDelete,
+  onActivate,
+  isActiveRouting,
   pendingAction,
 }: InstalledRowProps) {
   const display = formatRegionState(region.state);
+  const canActivate = onActivate && display.isReady && !isActiveRouting;
 
   return (
-    <tr className="border-b border-border last:border-0">
+    <tr
+      data-active-routing={isActiveRouting ? "true" : undefined}
+      className={cn(
+        "border-b border-border last:border-0",
+        isActiveRouting ? "bg-primary/5" : undefined,
+      )}
+    >
       <td className="px-3 py-3 align-top">
         <div className="flex flex-col">
-          <span className="font-medium">{region.displayName}</span>
+          <span className="flex items-center gap-2 font-medium">
+            {region.displayName}
+            {isActiveRouting ? (
+              <span
+                aria-label="Active routing region"
+                className="inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+              >
+                Active
+              </span>
+            ) : null}
+          </span>
           <span className="font-mono text-xs text-muted-foreground">
             {region.name}
           </span>
@@ -111,6 +134,18 @@ export function InstalledRow({
       </td>
       <td className="px-3 py-3 align-top">
         <div className="flex items-center justify-end gap-1">
+          {canActivate ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => onActivate?.(region)}
+              disabled={pendingAction === "activate"}
+              aria-label={`Use ${region.displayName} for routing`}
+            >
+              <Navigation className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+              Use for routing
+            </Button>
+          ) : null}
           {display.isReady || display.isFailed ? (
             <Button
               size="sm"

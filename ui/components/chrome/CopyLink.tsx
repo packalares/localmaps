@@ -9,6 +9,7 @@ import {
 } from "react";
 import { Link2, Check } from "lucide-react";
 import { useMapStore } from "@/lib/state/map";
+import { usePlaceStore } from "@/lib/state/place";
 import { useDirectionsStore } from "@/lib/state/directions";
 import {
   buildShareUrl,
@@ -52,12 +53,21 @@ export function CopyLink({ baseUrl, className }: CopyLinkProps) {
   const buildState = useCallback((): ShareableState => {
     const m = useMapStore.getState();
     const d = useDirectionsStore.getState();
+    const p = usePlaceStore.getState();
     const hasWaypoint = d.waypoints.some((wp) => wp.lngLat !== null);
+    // The canonical "selected place" is `usePlaceStore.selectedFeature`.
+    // We only round-trip a POI id (kind === "poi"); plain points carry
+    // no stable id, so the share link relies on the viewport hash for
+    // them.
+    const selectedPoiId =
+      p.selectedFeature?.kind === "poi" && p.selectedFeature.id
+        ? p.selectedFeature.id
+        : null;
     return {
       viewport: m.viewport,
       activeRegion: m.activeRegion,
       leftRailTab: m.leftRailTab,
-      selectedPoiId: m.selectedPoi?.id ?? null,
+      selectedPoiId,
       route: hasWaypoint
         ? {
             mode: d.mode,

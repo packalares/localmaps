@@ -53,12 +53,25 @@ type Service struct {
 	db      *sqlx.DB
 	catalog Catalog
 	queue   Enqueuer
+	// dataDir is the gateway's LOCALMAPS_DATA_DIR. Activate writes the
+	// per-region routing pointer beneath <dataDir>/regions/.active-region
+	// so Valhalla's startup loop can pick it up. Empty disables the
+	// file write (tests, in-memory deployments).
+	dataDir string
 }
 
 // NewService wires a Service from its collaborators. All three are
-// required; nil will panic at first use.
+// required; nil will panic at first use. dataDir may be empty when
+// the file-side of Activate is not desired (tests).
 func NewService(db *sqlx.DB, catalog Catalog, queue Enqueuer) *Service {
 	return &Service{db: db, catalog: catalog, queue: queue}
+}
+
+// WithDataDir attaches the gateway DataDir, enabling Activate to write
+// the active-region pointer file. Returns the Service for chaining.
+func (s *Service) WithDataDir(dir string) *Service {
+	s.dataDir = dir
+	return s
 }
 
 // ListCatalog proxies the Geofabrik catalog. It returns a slice of

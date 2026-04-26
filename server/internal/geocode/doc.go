@@ -1,8 +1,4 @@
-// Package geocode will proxy `/api/geocode/*` requests to the internal
-// Pelias API per docs/01-architecture.md. Phase 1 stubs the package.
+// Package geocode is a legacy Phase-1 placeholder superseded by
+// server/internal/geocoding (the pelias-api proxy client). Kept as a
+// package directory to preserve import-path history; empty on purpose.
 package geocode
-
-// Client is the interface the HTTP layer will call.
-type Client interface {
-	// Phase 2 will flesh this out — see contracts/openapi.yaml.
-}

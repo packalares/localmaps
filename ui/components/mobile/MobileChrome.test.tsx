@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useMapStore } from "@/lib/state/map";
+import { usePlaceStore } from "@/lib/state/place";
 import { MobileChrome } from "./MobileChrome";
 
 function wrap(ui: React.ReactElement) {
@@ -22,10 +23,9 @@ describe("<MobileChrome />", () => {
     useMapStore.setState((s) => ({
       ...s,
       leftRailTab: "search",
-      selectedPoi: null,
-      selectedResult: null,
       pendingClick: null,
     }));
+    usePlaceStore.getState().clearSelectedFeature();
   });
 
   it("renders the search bar pinned to the top", () => {
@@ -49,10 +49,13 @@ describe("<MobileChrome />", () => {
   });
 
   it("shows the Place tab once a POI is selected", () => {
-    useMapStore.setState((s) => ({
-      ...s,
-      selectedPoi: { id: "x", label: "Test", lat: 0, lon: 0 },
-    }));
+    usePlaceStore.getState().setSelectedFeature({
+      kind: "poi",
+      id: "x",
+      lat: 0,
+      lon: 0,
+      name: "Test",
+    });
     wrap(<MobileChrome />);
     expect(screen.getByRole("button", { name: "Place" })).toBeInTheDocument();
   });

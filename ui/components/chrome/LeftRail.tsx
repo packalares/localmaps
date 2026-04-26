@@ -1,34 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import {
-  Bookmark,
-  ChevronLeft,
-  ChevronRight,
-  List,
-  MapPin,
-  Route,
-  Search,
-} from "lucide-react";
+import { List, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import { SearchBar } from "./SearchBar";
-import { RegionSwitcher } from "./RegionSwitcher";
-import { LocaleSelector } from "./LocaleSelector";
-import { SearchPanel } from "@/components/search/SearchPanel";
 import { DirectionsPanel } from "@/components/directions/DirectionsPanel";
-import { PoiPane, useWhatsHere, type WhatsHereHit } from "@/components/poi";
-import { ShareButton } from "@/components/share/ShareButton";
+import { CategoryResultsPanel } from "@/components/chrome/CategoryResultsPanel";
+import { RecentsPanel } from "@/components/chrome/RecentsPanel";
 import { MobileChrome } from "@/components/mobile/MobileChrome";
-import { useMapStore, type LeftRailTab } from "@/lib/state/map";
+import {
+  assertNeverTab,
+  useMapStore,
+  type LeftRailTab,
+} from "@/lib/state/map";
 import { useBreakpoint } from "@/lib/responsive/use-breakpoint";
 import { useMessages } from "@/lib/i18n/provider";
 
 /**
  * Responsive entry point. Below 768px renders the mobile chrome
  * (BottomSheet + BottomNav + top-pinned SearchBar); at tablet/desktop
- * renders the classic collapsible side panel. During SSR the breakpoint
- * hook returns `null` — we fall through to the desktop rail so the
+ * renders Google's side panel column. During SSR the breakpoint hook
+ * returns `null` — we fall through to the desktop rail so the
  * server-rendered markup matches what most visitors see.
  */
 export function LeftRail() {
@@ -40,155 +30,116 @@ export function LeftRail() {
 }
 
 /**
- * Collapsible left rail, mirroring Google Maps' side panel. Contains the
- * search pill + region switcher at the top, a tab strip below for
- * Search / Directions / Place / Saved, and the active tab body.
+ * Sliding panel column that mimics Google Maps desktop: a detached
+ * 400px-wide white column anchored to the left edge of the viewport,
+ * top-0 / bottom-0, housing whichever detail panel the user asked
+ * for (directions form, selected POI, saved list). Typing in the
+ * floating search bar does NOT open this column — autocomplete
+ * results appear in the SearchBar's own dropdown. The column is only
+ * shown when the user has explicitly navigated to a panel:
+ * Directions button, context menu "What's here?", or a saved-list
+ * entry.
  *
- * Tab state lives in the Zustand store (`leftRailTab`) so the search
- * bar, context menu, and POI resolver can flip tabs imperatively.
+ * The canonical `leftRailTab` state still drives what renders. The
+ * `search` value means the column is hidden (just the floating
+ * SearchBar + map remain visible). The X button restores that state.
  */
 export function LeftRailDesktop() {
-  const [collapsed, setCollapsed] = useState(false);
   const leftRailTab = useMapStore((s) => s.leftRailTab);
   const openLeftRail = useMapStore((s) => s.openLeftRail);
-  const selectedPoi = useMapStore((s) => s.selectedPoi);
-  const selectedResult = useMapStore((s) => s.selectedResult);
   const { t } = useMessages();
 
-  // Watch pendingClick → run useWhatsHere → auto-open the place tab.
-  const pendingClick = useMapStore((s) => s.pendingClick);
-  const clearPendingClick = useMapStore((s) => s.clearPendingClick);
-  const [hit, setHit] = useState<WhatsHereHit | null>(null);
-  useEffect(() => {
-    if (!pendingClick) return;
-    setHit({ lngLat: pendingClick.lngLat });
-    openLeftRail("place");
-    clearPendingClick();
-  }, [pendingClick, openLeftRail, clearPendingClick]);
-  const whatsHere = useWhatsHere(hit);
+  // The column is hidden when the only active tab is `search` — the
+  // floating SearchBar owns that UX. Everything else promotes the
+  // column into view.
+  const visible = leftRailTab !== "search";
+
+  if (!visible) return null;
+
+  const handleClose = () => {
+    // Full reset: deactivate any active chip, clear the search query,
+    // and close the panel. Mirrors Google's "X closes everything".
+    useMapStore.getState().closeCategoryResults();
+    useMapStore.getState().requestClearSearchQuery();
+    openLeftRail("search");
+  };
+
+  // Some panels (DirectionsPanel, CategoryResultsPanel) render their
+  // own header X. Skip the rail's global X for those tabs to avoid the
+  // double-close-button stack the audit flagged.
+  const hidesPanelX =
+    leftRailTab === "directions" || leftRailTab === "categoryResults";
 
   return (
     <aside
       className={cn(
-        "pointer-events-auto relative z-10 flex h-full flex-col gap-3 transition-[width] duration-200 ease-in-out",
-        collapsed ? "w-12" : "w-[380px]",
+        // Sits to the right of the permanent 56px LeftIconRail on desktop;
+        // full-width on mobile (MobileChrome handles that branch before
+        // we get here). Uses the chrome surface tokens so the elevation
+        // cue reads in both light and dark mode (was hardcoded
+        // bg-white + shadow-xl with no dark variant).
+        "pointer-events-auto absolute inset-y-0 left-14 z-20 flex w-[400px] flex-col bg-chrome-surface text-foreground shadow-chrome-lg",
       )}
       aria-label={t("leftRail.ariaLabel")}
     >
-      {!collapsed && (
-        <>
-          <div className="flex items-center gap-2 px-3 pt-3">
-            <div className="flex-1">
-              <SearchBar embedPanel={false} />
-            </div>
-            <RegionSwitcher />
-            <LocaleSelector />
-            <ShareButton />
-          </div>
-          <nav
-            className="mx-3 chrome-card flex overflow-hidden text-sm"
-            aria-label={t("leftRail.tabs.ariaLabel")}
-          >
-            <TabButton
-              active={leftRailTab === "search"}
-              onClick={() => openLeftRail("search")}
-              icon={<Search className="h-4 w-4" aria-hidden="true" />}
-              label={t("leftRail.tabs.search")}
-            />
-            <TabButton
-              active={leftRailTab === "directions"}
-              onClick={() => openLeftRail("directions")}
-              icon={<Route className="h-4 w-4" aria-hidden="true" />}
-              label={t("leftRail.tabs.directions")}
-            />
-            <TabButton
-              active={leftRailTab === "place"}
-              onClick={() => openLeftRail("place")}
-              icon={<MapPin className="h-4 w-4" aria-hidden="true" />}
-              label={t("leftRail.tabs.place")}
-              hidden={!selectedPoi && whatsHere.status === "idle" && !hit}
-            />
-            <TabButton
-              active={leftRailTab === "saved"}
-              onClick={() => openLeftRail("saved")}
-              icon={<Bookmark className="h-4 w-4" aria-hidden="true" />}
-              label={t("leftRail.tabs.saved")}
-            />
-          </nav>
-
-          <div className="chrome-card mx-3 mb-3 flex-1 overflow-y-auto">
-            {leftRailTab === "search" && (
-              <SearchPanel query={selectedResult?.label ?? ""} />
-            )}
-            {leftRailTab === "directions" && <DirectionsPanel />}
-            {leftRailTab === "place" && (
-              <PoiPane
-                poi={whatsHere.poi}
-                status={whatsHere.status}
-                onClose={() => {
-                  setHit(null);
-                  openLeftRail("search");
-                }}
-              />
-            )}
-            {leftRailTab === "saved" && (
-              <div className="p-4 text-sm text-muted-foreground">
-                <List className="mb-2 h-4 w-4 opacity-60" aria-hidden="true" />
-                <p>{t("leftRail.saved.title")}</p>
-                <p className="mt-1 text-xs">{t("leftRail.saved.subtitle")}</p>
-              </div>
-            )}
-            {leftRailTab === "results" && (
-              <div className="p-4 text-sm text-muted-foreground">
-                <p>Browse installed regions and pinned results here.</p>
-              </div>
-            )}
-          </div>
-        </>
+      {/* Close affordance (top-right of the panel). Skipped for tabs
+          that already render their own header X (Directions, category
+          results) — keeps the chrome to one X button per panel. */}
+      {!hidesPanelX && (
+        <button
+          type="button"
+          onClick={handleClose}
+          aria-label={t("leftRail.collapse")}
+          className={cn(
+            "absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground",
+            "hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          )}
+        >
+          <X className="h-4 w-4" aria-hidden="true" />
+        </button>
       )}
 
-      <Button
-        variant="chrome"
-        size="icon"
-        onClick={() => setCollapsed((c) => !c)}
-        aria-label={collapsed ? t("leftRail.expand") : t("leftRail.collapse")}
-        aria-expanded={!collapsed}
-        className="absolute -right-4 top-1/2 h-8 w-8 -translate-y-1/2"
-      >
-        {collapsed ? (
-          <ChevronRight className="h-4 w-4" aria-hidden="true" />
-        ) : (
-          <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col overflow-y-auto pt-16",
         )}
-      </Button>
+      >
+        {renderTabBody(leftRailTab, t)}
+      </div>
     </aside>
   );
 }
 
-function TabButton(props: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-  hidden?: boolean;
-}) {
-  if (props.hidden) return null;
-  return (
-    <button
-      type="button"
-      onClick={props.onClick}
-      aria-pressed={props.active}
-      className={cn(
-        "flex flex-1 items-center justify-center gap-2 px-3 py-2 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        props.active
-          ? "bg-primary/10 text-primary"
-          : "text-foreground hover:bg-muted",
-      )}
-    >
-      {props.icon}
-      <span>{props.label}</span>
-    </button>
-  );
+/**
+ * Exhaustive switch over `LeftRailTab` — adding a new tab forces a
+ * TS error here so the panel always knows what to render.
+ */
+function renderTabBody(
+  tab: LeftRailTab,
+  t: ReturnType<typeof useMessages>["t"],
+): React.ReactNode {
+  switch (tab) {
+    case "search":
+      // Hidden state — the column itself is unmounted before we get
+      // here, so this branch only exists to keep the switch exhaustive.
+      return null;
+    case "directions":
+      return <DirectionsPanel />;
+    case "categoryResults":
+      return <CategoryResultsPanel />;
+    case "saved":
+      return (
+        <div className="p-4 text-sm text-muted-foreground">
+          <List className="mb-2 h-4 w-4 opacity-60" aria-hidden="true" />
+          <p>{t("leftRail.saved.title")}</p>
+          <p className="mt-1 text-xs">{t("leftRail.saved.subtitle")}</p>
+        </div>
+      );
+    case "recents":
+      return <RecentsPanel />;
+    default:
+      return assertNeverTab(tab);
+  }
 }
 
 // Narrowing for external consumers + ts check.

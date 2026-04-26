@@ -91,7 +91,8 @@ func run() error {
 		} else {
 			asynqClient := asynq.NewClient(redisOpt)
 			defer func() { _ = asynqClient.Close() }()
-			regionsSvc = regions.NewService(store.DB(), catClient, asynqClient)
+			regionsSvc = regions.NewService(store.DB(), catClient, asynqClient).
+				WithDataDir(boot.DataDir)
 		}
 	}
 

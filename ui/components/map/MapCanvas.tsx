@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import maplibregl, {
   type Map as MapLibreMap,
+  AttributionControl,
   GeolocateControl,
   NavigationControl,
   ScaleControl,
@@ -13,6 +14,7 @@ import { DEFAULT_VIEWPORT, useMapStore } from "@/lib/state/map";
 import { useUrlViewport } from "@/lib/map/use-url-viewport";
 import { useStyleUrl } from "@/lib/api/hooks";
 import { useMessages } from "@/lib/i18n/provider";
+import { registerPoiIcons } from "@/lib/map/poi-icons";
 
 /**
  * Props forwarded from `MapView`. Every option has a sensible default so
@@ -84,6 +86,12 @@ export function MapCanvas({
       pitch: initial.viewport.pitch,
       attributionControl: false,
       hash: false,
+      transformRequest: (reqUrl) => {
+        if (reqUrl.startsWith("/") && typeof window !== "undefined") {
+          return { url: window.location.origin + reqUrl };
+        }
+        return { url: reqUrl };
+      },
     });
 
     if (!hideControls) {
@@ -91,8 +99,23 @@ export function MapCanvas({
         new NavigationControl({ visualizePitch: true, showCompass: true }),
         "top-right",
       );
-      map.addControl(new ScaleControl({ maxWidth: 120 }), "bottom-left");
     }
+    // Scale + attribution always present — the FabStack replaces the
+    // navigation control but the chrome at bottom-right (the m/km
+    // scale and "© OpenStreetMap" attribution from `2.png`) is
+    // independent of `hideControls`.
+    map.addControl(
+      new ScaleControl({ maxWidth: 120, unit: "metric" }),
+      "bottom-right",
+    );
+    map.addControl(
+      // Inline text strip ("© OpenStreetMap …") next to the scale,
+      // matching `7.png`'s bottom-right footer. compact:false keeps
+      // the attribution always-visible instead of the hover-to-expand
+      // "i" icon.
+      new AttributionControl({ compact: false }),
+      "bottom-right",
+    );
     if (!hideGeolocate) {
       map.addControl(
         new GeolocateControl({
@@ -133,6 +156,7 @@ export function MapCanvas({
     const onStyleLoad = () => {
       setMap(map);
       if (enable3DBuildings) install3DBuildings(map, has3DRef);
+      registerPoiIcons(map);
       onReady?.(map);
     };
 
@@ -166,6 +190,7 @@ export function MapCanvas({
     has3DRef.current = false;
     const onStyleReload = () => {
       if (enable3DBuildings) install3DBuildings(map, has3DRef);
+      registerPoiIcons(map);
     };
     map.once("styledata", onStyleReload);
     return () => {

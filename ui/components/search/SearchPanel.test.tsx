@@ -127,7 +127,7 @@ describe("<SearchPanel />", () => {
     );
   });
 
-  it("selecting a result fires setSelectedResult and flyTo on the store map", async () => {
+  it("selecting a result publishes the placeStore feature and flyTo's the map", async () => {
     const user = userEvent.setup();
     globalThis.fetch = (vi.fn<typeof fetch>(async () =>
       okJson({ results: [bucharest()], traceId: "t3" }),
@@ -154,7 +154,10 @@ describe("<SearchPanel />", () => {
     });
     await user.click(option);
 
-    expect(useMapStore.getState().selectedResult?.id).toBe("r-bucharest");
+    const placeFeature = (
+      await import("@/lib/state/place")
+    ).usePlaceStore.getState().selectedFeature;
+    expect(placeFeature?.id).toBe("r-bucharest");
     expect(flyTo).toHaveBeenCalledTimes(1);
     const flyArgs = (flyTo as Mock).mock.calls[0]?.[0];
     expect(flyArgs).toMatchObject({
@@ -176,7 +179,10 @@ describe("<SearchPanel />", () => {
     fireEvent.keyDown(section, { key: "ArrowDown" });
     fireEvent.keyDown(section, { key: "Enter" });
 
-    expect(useMapStore.getState().selectedResult?.id).toBe("r-brasov");
+    const placeFeature = (
+      await import("@/lib/state/place")
+    ).usePlaceStore.getState().selectedFeature;
+    expect(placeFeature?.id).toBe("r-brasov");
   });
 
   it("hits /api/geocode/search when fullSearch is true", async () => {

@@ -99,6 +99,9 @@ var Annotations = map[string]Annotation{
 	"routing.valhallaBuildTimeoutMinutes": {Min: floatP(1), Max: floatP(1440), Unit: "minutes"},
 	"routing.valhallaExtraArgs":          {ItemType: TypeString, Description: "Extra CLI args passed to valhalla_build_tiles."},
 	"routing.valhallaTileDirName":        {Description: "Subdirectory inside the region dir that holds the routing graph."},
+	"routing.activeRegion": {
+		Description: "Canonical region key whose Valhalla tiles serve routing requests. Empty falls back to the largest available tile archive.",
+	},
 
 	// --- tiles.* ------------------------------------------------------
 	"tiles.source": {

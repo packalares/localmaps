@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import type { GeocodeResult } from "@/lib/api/schemas";
 import {
@@ -8,13 +8,9 @@ import {
   useGeocodeSearch,
 } from "@/lib/api/hooks";
 import { useMapStore } from "@/lib/state/map";
+import { usePlaceStore } from "@/lib/state/place";
 import { useDebouncedValue } from "@/lib/search/debounce";
 import { useKeyboardNav } from "@/lib/search/keyboard-nav";
-import {
-  clearSearchPin,
-  computeZoomForResult,
-  dropSearchPin,
-} from "@/lib/search/map-actions";
 import { cn } from "@/lib/utils";
 import { ResultCard } from "./ResultCard";
 import { RecentHistory, pushHistoryEntry } from "./RecentHistory";
@@ -57,8 +53,6 @@ export function SearchPanel({
   const map = useMapStore((s) => s.map);
   const viewport = useMapStore((s) => s.viewport);
   const installedRegions = useMapStore((s) => s.installedRegions);
-  const setSelectedResult = useMapStore((s) => s.setSelectedResult);
-  const selectedResult = useMapStore((s) => s.selectedResult);
 
   const focus = useMemo(
     () => ({ lat: viewport.lat, lon: viewport.lon }),
@@ -86,11 +80,30 @@ export function SearchPanel({
 
   const selectResult = useCallback(
     (result: GeocodeResult) => {
-      setSelectedResult(result);
       pushHistoryEntry(result);
       onResultSelected?.(result);
+
+      // Drive the standard PointInfoCard pin via the place store so
+      // the user gets the same Google-style marker + info card they
+      // see on map clicks. The bottom card derives its label from
+      // `feature.name` (here = the result label) so no extra fetch.
+      const placeStore = usePlaceStore.getState();
+      placeStore.setSelectedFeature({
+        kind: "poi",
+        id: result.id,
+        lat: result.center.lat,
+        lon: result.center.lon,
+        name: result.label,
+        address: result.label,
+      });
+
       if (map) {
-        const z = computeZoomForResult(result);
+        let z: number;
+        try {
+          z = map.getZoom();
+        } catch {
+          z = viewport.zoom;
+        }
         try {
           map.flyTo({
             center: [result.center.lon, result.center.lat],
@@ -100,14 +113,9 @@ export function SearchPanel({
         } catch {
           // Map may have been torn down mid-click; skip silently.
         }
-        try {
-          dropSearchPin(map, result.center.lat, result.center.lon);
-        } catch {
-          // ignore — the layer-bus is defensive on its own.
-        }
       }
     },
-    [map, onResultSelected, setSelectedResult],
+    [map, onResultSelected, viewport.zoom],
   );
 
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -120,18 +128,6 @@ export function SearchPanel({
       (document.activeElement as HTMLElement | null)?.blur?.();
     },
   });
-
-  // Clean up the pin when the selection is cleared or the panel unmounts.
-  useEffect(() => {
-    if (!map) return;
-    if (!selectedResult) clearSearchPin(map);
-  }, [map, selectedResult]);
-
-  useEffect(() => {
-    return () => {
-      if (map) clearSearchPin(map);
-    };
-  }, [map]);
 
   const showEmptyNoQuery = trimmed.length === 0;
   const showEmptyNoResults =

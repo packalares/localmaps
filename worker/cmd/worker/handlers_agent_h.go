@@ -1,13 +1,12 @@
 // handlers_agent_h.go — Agent H's pipeline:geocoding StageWork.
 // Registered through registerAgentEHandlers → stageHandler wrapping.
 //
-// The runner shells out to the Pelias openstreetmap importer. Under
-// docker-compose we use `docker run` against `search.peliasImporterImage`
-// with the region dir mounted at /data. Under Kubernetes (single
-// pod with multiple containers) the docker socket is not mounted; the
-// long-term path is a sidecar watcher over the shared /data volume,
-// tracked as NEEDED in the agent report. For now we keep docker-run so
-// the dev-loop works (docs/10-deploy.md, "Dev loop (single machine)").
+// Indexing runs in-process: we read source.osm.pbf with paulmach/osm,
+// project the features pelias-api cares about (POIs, localities, named
+// streets) onto pelias's document schema, and bulk-POST them to the
+// pelias-es _bulk endpoint. No docker socket + no Node importer
+// sidecar required, so this works uniformly under docker-compose and
+// under Kubernetes (docs/10-deploy.md).
 package main
 
 import (
@@ -17,90 +16,113 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 
 	"github.com/packalares/localmaps/internal/jobs"
 	"github.com/packalares/localmaps/worker/internal/pipeline"
+	"github.com/packalares/localmaps/worker/internal/pipeline/peliasindex"
 )
 
 // geocodingWork returns the real `pipeline:geocoding` StageWork. It
-// writes a pelias.json into the shared workDir, then invokes the
-// importer image against the region's .new directory. All knobs come
-// from settings (R3).
+// calls peliasindex.Build against the region's source.osm.pbf and
+// bulk-indexes pelias-es directly. On success the manifest is updated
+// with the pelias index metadata; on failure the error propagates up
+// to stageHandler which marks the region failed + Asynq retries.
 func geocodingWork(deps ChainDeps) StageWork {
 	return func(ctx context.Context, regionDir string, p jobs.PipelineStagePayload, log zerolog.Logger) error {
-		workDir := filepath.Join(filepath.Dir(filepath.Dir(regionDir)), "tools", "pelias-runs", p.JobID)
-		if err := os.MkdirAll(workDir, 0o755); err != nil {
-			return fmt.Errorf("mkdir pelias work: %w", err)
+		// The chain always hands us `<root>/regions/<region>.new`. On a
+		// retry after the swap already ran (earlier DNS error path), that
+		// dir is gone and the pbf is in the live dir. Fall back to it.
+		pbfPath := filepath.Join(regionDir, "source.osm.pbf")
+		if _, err := os.Stat(pbfPath); err != nil {
+			liveDir := strings.TrimSuffix(regionDir, ".new")
+			if liveDir != regionDir {
+				alt := filepath.Join(liveDir, "source.osm.pbf")
+				if _, altErr := os.Stat(alt); altErr == nil {
+					log.Info().Str("pbf", alt).Msg("pelias import: using live pbf (.new already swapped)")
+					pbfPath = alt
+					regionDir = liveDir
+				} else {
+					return fmt.Errorf("pelias import: source.osm.pbf missing at %s and %s: %w", pbfPath, alt, err)
+				}
+			} else {
+				return fmt.Errorf("pelias import: source.osm.pbf missing at %s: %w", pbfPath, err)
+			}
 		}
-
-		esHost, esPort := resolvePeliasES(deps.Settings)
-		langs := settingArrOrDefault(deps.Settings, "search.peliasLanguages", []string{"en"})
-		polylines := settingBoolOrDefault(deps.Settings, "search.peliasPolylinesEnabled", false)
+		esURL := peliasESURL(deps.Settings)
+		indexName := fmt.Sprintf("pelias-%s-%s", p.Region, time.Now().UTC().Format("20060102"))
+		// pelias-api hard-codes the index name "pelias" (see
+		// deploy/pelias/pelias.json + pelias's schema/esclient). We
+		// honour that by writing docs into the `pelias` alias/index; the
+		// per-region `indexName` is surfaced only in the manifest for
+		// human audit.
+		batchSize := settingIntOrDefault(deps.Settings, "search.peliasBatchSize", 1000)
 		timeoutMin := settingIntOrDefault(deps.Settings, "search.peliasBuildTimeoutMinutes", 120)
-		importerImage := settingOrDefault(deps.Settings, "search.peliasImporterImage", "pelias/openstreetmap:6.4.0")
 
-		cfg := pipeline.ImportConfig{
-			Region:           p.Region,
-			PbfPath:          "/data/source.osm.pbf", // container-side mount (regionDir → /data)
-			ESHost:           esHost,
-			ESPort:           esPort,
-			IndexName:        fmt.Sprintf("pelias-%s-%s", p.Region, time.Now().UTC().Format("20060102")),
-			Languages:        langs,
-			PolylinesEnabled: polylines,
-		}
-		runner := &pipeline.PeliasRunner{
-			Logger:       log,
-			Config:       cfg,
-			Executables:  peliasExecutables(regionDir, importerImage),
-			BuildTimeout: time.Duration(timeoutMin) * time.Minute,
-			WorkDir:      workDir,
-		}
+		runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMin)*time.Minute)
+		defer cancel()
 
-		paths := pipeline.RegionPaths{
-			Root:      regionDir,
-			PbfPath:   filepath.Join(regionDir, "source.osm.pbf"),
-			RegionKey: p.Region,
-		}
-		progress := newStageProgress(ctx, deps, p.JobID, log)
+		log.Info().
+			Str("region", p.Region).
+			Str("pbf", pbfPath).
+			Str("esURL", esURL).
+			Str("indexAlias", "pelias").
+			Str("indexName", indexName).
+			Int("batchSize", batchSize).
+			Msg("pelias in-process import starting")
+
 		start := time.Now()
-		if err := runner.Run(ctx, paths, progress); err != nil {
+		stats, err := peliasindex.BuildWithOptions(runCtx, pbfPath, esURL, p.Region,
+			peliasindex.Options{BatchSize: batchSize}, log)
+		if err != nil {
 			return fmt.Errorf("pelias import: %w", err)
 		}
-		log.Info().Str("index", cfg.IndexName).
-			Dur("duration", time.Since(start)).Msg("pipeline:geocoding complete")
+		log.Info().
+			Int64("docs", stats.DocsIndexed).
+			Int64("nodes", stats.NodesSeen).
+			Int64("ways", stats.WaysSeen).
+			Dur("duration", stats.Duration).
+			Msg("pelias in-process import complete")
+
 		return pipeline.UpdateGeocodingSection(regionDir, p.Region, pipeline.GeocodingSection{
 			BuiltAt:              time.Now().UTC(),
 			BuildDurationSeconds: time.Since(start).Seconds(),
-			Tool:                 "pelias-openstreetmap",
-			ToolVersion:          importerImage,
-			IndexName:            cfg.IndexName,
-			ESHost:               fmt.Sprintf("%s:%d", esHost, esPort),
+			Tool:                 "peliasindex",
+			ToolVersion:          "in-process/go",
+			IndexName:            indexName,
+			ESHost:               esURL,
 		})
 	}
 }
 
-// resolvePeliasES reads search.peliasElasticUrl and splits it into host
-// + port. LOCALMAPS_PELIAS_ES_URL env acts as a fallback for dev-compose
-// (docs/07-config-schema.md); both paths point at pelias-es:9200 by
-// default.
-func resolvePeliasES(s StageSettings) (string, int) {
+// peliasESURL assembles the Elasticsearch base URL from settings. It
+// prefers settings.search.peliasElasticUrl (as persisted by the admin
+// UI); falls back to LOCALMAPS_PELIAS_ES_URL, then to the docker-compose
+// default http://pelias-es:9200 (docs/07-config-schema.md).
+func peliasESURL(s StageSettings) string {
 	if raw := settingOrDefault(s, "search.peliasElasticUrl", ""); raw != "" {
-		if h, p, ok := parsePeliasURL(raw); ok {
-			return h, p
+		if normalised, ok := normalisePeliasURL(raw); ok {
+			return normalised
 		}
 	}
-	return parsePeliasESEnv()
+	if raw := os.Getenv("LOCALMAPS_PELIAS_ES_URL"); raw != "" {
+		if normalised, ok := normalisePeliasURL(raw); ok {
+			return normalised
+		}
+	}
+	return "http://pelias-es:9200"
 }
 
-// parsePeliasURL extracts host + port from a URL string. Returns ok=false
-// when parsing fails or the URL lacks an explicit host.
-func parsePeliasURL(raw string) (string, int, bool) {
+// normalisePeliasURL strips whitespace + trailing slash, sets a default
+// port (9200) when the URL has none, and returns (url, false) on a
+// parse failure so the caller can fall back.
+func normalisePeliasURL(raw string) (string, bool) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
-		return "", 0, false
+		return "", false
 	}
 	host := u.Hostname()
 	port := 9200
@@ -109,42 +131,16 @@ func parsePeliasURL(raw string) (string, int, bool) {
 			port = v
 		}
 	}
-	return host, port, true
-}
-
-// parsePeliasESEnv pulls host+port out of LOCALMAPS_PELIAS_ES_URL.
-// Falls back to pelias-es:9200 (compose default) if unset/unparsable.
-func parsePeliasESEnv() (string, int) {
-	raw := os.Getenv("LOCALMAPS_PELIAS_ES_URL")
-	if raw == "" {
-		return "pelias-es", 9200
+	scheme := u.Scheme
+	if scheme == "" {
+		scheme = "http"
 	}
-	if h, p, ok := parsePeliasURL(raw); ok {
-		return h, p
-	}
-	return "pelias-es", 9200
-}
-
-// peliasExecutables returns the production invocation: run the pinned
-// openstreetmap importer image against the region directory. The
-// `localmaps` docker network is created by docker-compose; when the
-// worker runs in a bare container we still need to reach pelias-es +
-// pelias-api by name, so we attach to the same network.
-func peliasExecutables(regionDir, image string) map[string][]string {
-	return map[string][]string{
-		"importer": {
-			"docker", "run", "--rm",
-			"--network", "localmaps",
-			"-v", regionDir + ":/data",
-			"-e", "PELIAS_CONFIG=/data/pelias.json",
-			image, // TODO: pin by SHA-256 digest before prod (docs/08-security.md)
-			"./bin/start",
-		},
-	}
+	return fmt.Sprintf("%s://%s:%d", scheme, host, port), true
 }
 
 // settingBoolOrDefault mirrors settingOrDefault / settingIntOrDefault
-// for boolean settings keys.
+// for boolean settings keys. Kept here because handlers_agent_fg.go
+// does not export it.
 func settingBoolOrDefault(s StageSettings, key string, def bool) bool {
 	if s == nil {
 		return def

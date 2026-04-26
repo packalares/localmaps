@@ -16,6 +16,7 @@ type Boot struct {
 	ProtomapsURL       string `env:"LOCALMAPS_PROTOMAPS_URL"       envDefault:"http://protomaps:8000"`
 	ValhallaURL        string `env:"LOCALMAPS_VALHALLA_URL"        envDefault:"http://valhalla:8002"`
 	PeliasURL          string `env:"LOCALMAPS_PELIAS_URL"          envDefault:"http://pelias-api:4000"`
+	PeliasESURL        string `env:"LOCALMAPS_PELIAS_ES_URL"       envDefault:"http://pelias-es:9200"`
 	Mode               string `env:"LOCALMAPS_MODE"                envDefault:"gateway"`
 	LogLevel           string `env:"LOCALMAPS_LOG_LEVEL"           envDefault:"info"`
 	TrustProxyHeaders  bool   `env:"LOCALMAPS_TRUST_PROXY_HEADERS" envDefault:"false"`

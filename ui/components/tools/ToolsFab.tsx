@@ -6,7 +6,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useActiveToolStore } from "@/lib/tools/active-tool";
 
@@ -37,20 +36,26 @@ export function ToolsFab() {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button
-          variant="chrome"
+        <button
+          type="button"
           aria-label={label}
           title={label}
-          className={cn(active && "ring-2 ring-primary")}
+          className={cn(
+            "relative inline-flex h-8 w-8 items-center justify-center rounded-lg bg-white text-foreground",
+            "shadow-sm ring-1 ring-black/10 hover:bg-neutral-100",
+            "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "dark:bg-neutral-900 dark:ring-white/10 dark:hover:bg-neutral-800",
+            active && "ring-2 ring-primary",
+          )}
         >
-          <Ruler className="h-5 w-5" aria-hidden="true" />
+          <Ruler className="h-4 w-4" aria-hidden="true" />
           {active && (
             <span
               aria-hidden="true"
               className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-primary"
             />
           )}
-        </Button>
+        </button>
       </PopoverTrigger>
       <PopoverContent side="left" align="start" className="w-64 p-2">
         <div className="mb-1 px-2 text-xs font-medium text-muted-foreground">

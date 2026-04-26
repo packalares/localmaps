@@ -3,16 +3,20 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
 } from "react";
-import { Menu, Search, X } from "lucide-react";
-import { useMapStore } from "@/lib/state/map";
+import { CornerUpRight, Menu, Search, X } from "lucide-react";
+import { useMapStore, type PoiCategory } from "@/lib/state/map";
 import { cn } from "@/lib/utils";
 import { SearchPanel } from "@/components/search/SearchPanel";
 import { useMessages } from "@/lib/i18n/provider";
+import maplibregl from "maplibre-gl";
+import {
+  CATEGORY_DESCRIPTORS,
+  descriptorFor,
+} from "@/components/chrome/category-descriptors";
 
 /**
  * Google-Maps-style search pill.
@@ -47,6 +51,33 @@ export interface SearchBarProps {
 
 const LISTBOX_ID = "localmaps-search-results";
 
+/** Serialise the live map bounds → bbox payload. Mirrors PoiSearchChips. */
+function bboxFromMap(m: maplibregl.Map | null): string | null {
+  if (!m) return null;
+  try {
+    const b = m.getBounds();
+    return `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * If `text` exactly matches one of the chip display labels (case- and
+ * whitespace-insensitive), return that chip's category key. Partial
+ * matches don't qualify — we only auto-activate on a full-name type-in
+ * (Change 4).
+ */
+function chipKeyForExactLabel(text: string): PoiCategory | null {
+  const norm = text.trim().toLowerCase();
+  if (!norm) return null;
+  for (const desc of CATEGORY_DESCRIPTORS) {
+    if (desc.label.toLowerCase() === norm) return desc.key;
+    if (desc.short.toLowerCase() === norm) return desc.key;
+  }
+  return null;
+}
+
 export function SearchBar({
   debounceMs = 300,
   lang,
@@ -59,7 +90,26 @@ export function SearchBar({
   const [isFocused, setIsFocused] = useState(false);
 
   const openLeftRail = useMapStore((s) => s.openLeftRail);
-  const leftRailTab = useMapStore((s) => s.leftRailTab);
+  const activeCategoryChip = useMapStore((s) => s.activeCategoryChip);
+  const runCategorySearch = useMapStore((s) => s.runCategorySearch);
+  const closeCategoryResults = useMapStore((s) => s.closeCategoryResults);
+  const setSearchDropdownOpen = useMapStore((s) => s.setSearchDropdownOpen);
+  const map = useMapStore((s) => s.map);
+
+  // Mirror local isFocused state into the store so SelectedFeatureSync
+  // can cascade-close the dropdown on map clicks.
+  useEffect(() => {
+    setSearchDropdownOpen(isFocused);
+    return () => setSearchDropdownOpen(false);
+  }, [isFocused, setSearchDropdownOpen]);
+
+  // External clear (e.g. the side-panel close X) bumps this token.
+  const searchClearToken = useMapStore((s) => s.searchClearToken);
+  useEffect(() => {
+    if (searchClearToken === 0) return;
+    setQuery("");
+    setFullSearch(false);
+  }, [searchClearToken]);
   const { t } = useMessages();
 
   // Shortcut keys: `/` and Cmd/Ctrl-K both focus the input.
@@ -94,6 +144,17 @@ export function SearchBar({
     setFullSearch(false);
   }, [openLeftRail]);
 
+  const tryActivateChipFromText = useCallback(
+    (text: string): boolean => {
+      const matched = chipKeyForExactLabel(text);
+      if (!matched) return false;
+      runCategorySearch(matched, bboxFromMap(map));
+      setQuery("");
+      return true;
+    },
+    [map, runCategorySearch],
+  );
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLInputElement>) => {
       if (e.key === "Escape") {
@@ -104,8 +165,13 @@ export function SearchBar({
         return;
       }
       if (e.key === "Enter") {
-        if (query.trim().length > 0) {
+        const trimmed = query.trim();
+        if (trimmed.length > 0) {
           e.preventDefault();
+          // Auto-activate the chip ONLY when the user explicitly hits
+          // Enter on a full chip-label (Change-12). Otherwise mid-typing
+          // "Food market" would silently swap to the Food chip search.
+          if (tryActivateChipFromText(trimmed)) return;
           setFullSearch(true);
         }
       }
@@ -115,33 +181,70 @@ export function SearchBar({
         e.preventDefault();
       }
     },
-    [query],
+    [query, tryActivateChipFromText],
   );
+
+  const handleBlur = useCallback(() => {
+    setIsFocused(false);
+    // Same fall-through as Enter — when the user types a full chip
+    // label and tabs/clicks away, activate the chip. Match is
+    // case-insensitive and trims surrounding whitespace, so the
+    // "Hotels " case still flips to the lodging chip.
+    const trimmed = query.trim();
+    if (trimmed.length > 0) tryActivateChipFromText(trimmed);
+  }, [query, tryActivateChipFromText]);
 
   const handleClear = useCallback(() => {
     setQuery("");
     setFullSearch(false);
+    // If a chip is active, clearing the bar = full reset (Change 3 +
+    // closing-the-result-panel = full reset).
+    if (activeCategoryChip) closeCategoryResults();
     inputRef.current?.focus();
-  }, []);
+  }, [activeCategoryChip, closeCategoryResults]);
 
-  const isOpen = useMemo(
-    () => isFocused || leftRailTab === "search",
-    [isFocused, leftRailTab],
-  );
+  // Dropdown is visible only while the input is focused. Selecting a
+  // result, clicking outside, or pressing Escape blurs the input and
+  // hides it. This mirrors Google Maps desktop.
+  const showDropdown = embedPanel && isFocused;
+
+  // Combobox `aria-expanded` must reflect ACTUAL listbox visibility —
+  // not just "is the search tab the active rail". Otherwise a screen
+  // reader hears "expanded" while no listbox exists.
+  const isOpen = showDropdown;
+
+  // Outside-click closes the dropdown. We watch pointerdown on the
+  // document; if the click lands outside the wrapper, blur the input.
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!isFocused) return;
+    const onDown = (e: PointerEvent) => {
+      const root = wrapperRef.current;
+      if (!root) return;
+      if (!root.contains(e.target as Node)) {
+        setIsFocused(false);
+        inputRef.current?.blur();
+      }
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [isFocused]);
 
   return (
-    <div className="flex flex-col gap-2">
+    <div ref={wrapperRef} className="flex w-full flex-col">
       <div
         className={cn(
-          "pointer-events-auto chrome-card flex w-full items-center gap-2 px-2 py-1.5",
+          "chrome-surface-sm pointer-events-auto flex h-12 w-full items-center gap-2 rounded-full px-2",
         )}
       >
         <button
           type="button"
+          onClick={() => openLeftRail("recents")}
           className="inline-flex h-8 w-8 items-center justify-center rounded-full hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label={t("search.openMenu")}
+          title={t("search.openMenu")}
         >
-          <Menu className="h-5 w-5" aria-hidden="true" />
+          <Menu className="h-4 w-4" aria-hidden="true" />
         </button>
         <div
           role="combobox"
@@ -157,48 +260,81 @@ export function SearchBar({
           />
           <input
             ref={inputRef}
-            type="search"
+            type="text"
+            role="searchbox"
             inputMode="search"
             autoComplete="off"
             spellCheck={false}
-            value={query}
+            // While a chip is active, the input mirrors the chip's
+            // display label so the user sees what they're searching.
+            // Typing replaces the chip with a free-text search.
+            value={
+              activeCategoryChip
+                ? descriptorFor(activeCategoryChip).label
+                : query
+            }
             onChange={(e) => {
-              setQuery(e.target.value);
+              let next = e.target.value;
+              if (activeCategoryChip) {
+                const label = descriptorFor(activeCategoryChip).label;
+                if (next.startsWith(label)) next = next.slice(label.length);
+                closeCategoryResults();
+              }
+              setQuery(next);
               setFullSearch(false);
+              // No chip auto-activation on every keystroke — that path
+              // was racing the user mid-type. The Enter / blur handlers
+              // own that flip now (Change-12).
             }}
             onFocus={handleFocus}
-            onBlur={() => setIsFocused(false)}
+            onBlur={handleBlur}
             onKeyDown={handleKeyDown}
             placeholder={t("search.placeholder")}
             aria-label={t("search.ariaLabel")}
             aria-autocomplete="list"
             aria-controls={LISTBOX_ID}
             className={cn(
-              "flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground",
+              "flex-1 bg-transparent text-[15px] outline-none placeholder:text-muted-foreground",
             )}
           />
-          {query.length > 0 ? (
+          {(activeCategoryChip || query.length > 0) ? (
             <button
               type="button"
               onClick={handleClear}
               aria-label={t("search.clear")}
               className={cn(
                 "inline-flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground",
-                "hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "hover:bg-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-neutral-800",
               )}
             >
               <X className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           ) : null}
         </div>
+        <button
+          type="button"
+          onClick={() => openLeftRail("directions")}
+          aria-label={t("search.directions")}
+          title={t("search.directions")}
+          className={cn(
+            "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-primary",
+            "hover:bg-primary/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          )}
+        >
+          <CornerUpRight className="h-4 w-4" aria-hidden="true" />
+        </button>
       </div>
 
-      {embedPanel ? (
+      {showDropdown ? (
         <div
           id={LISTBOX_ID}
+          // Prevent the input's onBlur firing before the click on a
+          // result registers — without this, isFocused flips to false
+          // first and the dropdown unmounts mid-click, swallowing the
+          // selection.
+          onMouseDown={(e) => e.preventDefault()}
           className={cn(
-            "pointer-events-auto chrome-card min-h-[3rem] max-h-[70vh] overflow-hidden",
-            query.length === 0 && !isFocused ? "hidden" : "",
+            "chrome-surface-lg pointer-events-auto mt-1 max-h-[70vh] overflow-hidden rounded-xl",
           )}
         >
           <SearchPanel
@@ -210,6 +346,10 @@ export function SearchBar({
             onResultSelected={(r) => {
               setQuery(r.label);
               setFullSearch(false);
+              // Close the dropdown after a pick: blur the input so
+              // showDropdown flips to false.
+              setIsFocused(false);
+              inputRef.current?.blur();
             }}
           />
         </div>

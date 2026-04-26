@@ -27,12 +27,14 @@ vi.mock("maplibre-gl", () => {
       NavigationControl: class {},
       GeolocateControl: class {},
       ScaleControl: class {},
+      AttributionControl: class {},
       addProtocol: vi.fn(),
     },
     Map: MapCtor,
     NavigationControl: class {},
     GeolocateControl: class {},
     ScaleControl: class {},
+    AttributionControl: class {},
     addProtocol: vi.fn(),
   };
 });

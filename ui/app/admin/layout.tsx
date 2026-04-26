@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
-import { Home, LogOut, Map, Settings, Wrench } from "lucide-react";
+import { Home, LogOut, Map, Settings } from "lucide-react";
 import { useCurrentUser, useLogout } from "@/lib/api/hooks";
 
 /**
@@ -48,12 +48,6 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
             icon={<Settings className="h-4 w-4" />}
           >
             Settings
-          </SidebarLink>
-          <SidebarLink
-            href="/admin/jobs"
-            icon={<Wrench className="h-4 w-4" />}
-          >
-            Jobs
           </SidebarLink>
           <div className="my-2 h-px bg-border" />
           <SidebarLink href="/" icon={<Home className="h-4 w-4" />}>

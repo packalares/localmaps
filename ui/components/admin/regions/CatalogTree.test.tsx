@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Region, RegionCatalogEntry } from "@/lib/api/schemas";
 import { CatalogTree } from "./CatalogTree";
@@ -51,9 +51,12 @@ describe("<CatalogTree />", () => {
     expect(screen.queryByRole("treeitem", { name: /romania/i })).toBeNull();
     const europe = screen.getByRole("treeitem", { name: /^europe$/i });
     expect(europe).toHaveAttribute("aria-expanded", "false");
-    await user.click(
-      screen.getAllByRole("button", { name: /expand/i })[0],
-    );
+    // Each continent row carries its own Expand chevron — click Europe's
+    // via the user-visible label.
+    const europeExpand = within(europe).getByRole("button", {
+      name: /expand/i,
+    });
+    await user.click(europeExpand);
     expect(
       await screen.findByRole("treeitem", { name: /romania/i }),
     ).toBeInTheDocument();

@@ -91,6 +91,27 @@ describe("decodeURL", () => {
     expect(r.waypoints).toHaveLength(1);
     expect(r.options.avoidFerries).toBe(true);
   });
+
+  it("decodes the share-button's ?lat=&lon=&zoom=&place= shape (F2)", () => {
+    const d = decodeURL(
+      absolute("/?lat=44.4268&lon=26.1025&zoom=14&place=osm%3Anode%3A1"),
+    )!;
+    expect(d.viewport?.lat).toBeCloseTo(44.4268, 4);
+    expect(d.viewport?.lon).toBeCloseTo(26.1025, 4);
+    expect(d.viewport?.zoom).toBeCloseTo(14, 4);
+    expect(d.selectedPoiId).toBe("osm:node:1");
+  });
+
+  it("share-button hash precedence: hash beats ?lat=&lon=", () => {
+    const d = decodeURL(
+      absolute("/?lat=10&lon=10&zoom=10#15.00/44.4268/26.1025"),
+    )!;
+    expect(d.viewport?.lat).toBeCloseTo(44.4268, 3);
+  });
+
+  it("rejects out-of-range share-button coords", () => {
+    expect(decodeURL(absolute("/?lat=999&lon=10&zoom=15"))?.viewport).toBeUndefined();
+  });
 });
 
 describe("round-trip encode <-> decode", () => {
@@ -98,7 +119,7 @@ describe("round-trip encode <-> decode", () => {
     { viewport: bucharest },
     { viewport: bucharest, activeRegion: "europe-romania" },
     { viewport: bucharest, leftRailTab: "saved" },
-    { viewport: bucharest, leftRailTab: "place", selectedPoiId: "osm:node:42" },
+    { viewport: bucharest, leftRailTab: "saved", selectedPoiId: "osm:node:42" },
     { viewport: bucharest, searchQuery: "coffee & pastries" },
     {
       viewport: { ...bucharest, bearing: 42.3, pitch: 30 },
@@ -152,7 +173,7 @@ describe("round-trip encode <-> decode", () => {
     },
     {
       viewport: { lat: 0, lon: 0, zoom: 2, bearing: 0, pitch: 0 },
-      leftRailTab: "results",
+      leftRailTab: "recents",
     },
     {
       viewport: { lat: -33.8688, lon: 151.2093, zoom: 13, bearing: 90, pitch: 60 },

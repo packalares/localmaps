@@ -5,6 +5,9 @@ package api
 // pure HTTP-handler code path.
 
 import (
+	"os"
+	"strings"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
 
@@ -35,7 +38,17 @@ func BuildManager(store *config.Store, db *sqlx.DB) *auth.Manager {
 }
 
 // BootstrapAdmin creates the initial admin if the users table is empty.
-// The generated password is returned so the caller can print it once.
+//
+// First-run flow:
+//   - LOCALMAPS_ADMIN_NAME / LOCALMAPS_ADMIN_PASSWORD env vars present
+//     (set by the Olares install form): create the user with those
+//     credentials, return ("", nil) so the caller doesn't log a password
+//     the operator already knows.
+//   - env vars absent (dev / docker-compose with no install form):
+//     generate a random 18-char password, return it so the caller can
+//     print it to stdout once.
+//
+// Later runs: users table is non-empty → no-op, returns ("", nil).
 func BootstrapAdmin(m *auth.Manager) (string, error) {
 	n, err := m.CountUsers()
 	if err != nil {
@@ -44,14 +57,27 @@ func BootstrapAdmin(m *auth.Manager) (string, error) {
 	if n > 0 {
 		return "", nil
 	}
-	pw, err := auth.RandomPassword(18)
-	if err != nil {
+	name := strings.TrimSpace(os.Getenv("LOCALMAPS_ADMIN_NAME"))
+	if name == "" {
+		name = "admin"
+	}
+	pw := os.Getenv("LOCALMAPS_ADMIN_PASSWORD")
+	announce := false
+	if pw == "" {
+		var err error
+		pw, err = auth.RandomPassword(18)
+		if err != nil {
+			return "", err
+		}
+		announce = true
+	}
+	if _, err := m.CreateUser(name, pw, auth.RoleAdmin); err != nil {
 		return "", err
 	}
-	if _, err := m.CreateUser("admin", pw, auth.RoleAdmin); err != nil {
-		return "", err
+	if announce {
+		return pw, nil
 	}
-	return pw, nil
+	return "", nil
 }
 
 // --- Registration shims wired by router.go -------------------------

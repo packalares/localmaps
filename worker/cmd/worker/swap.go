@@ -38,6 +38,16 @@ func runSwap(_ context.Context, deps ChainDeps, p jobs.RegionSwapPayload, log ze
 	info, err := os.Stat(newPath)
 	switch {
 	case os.IsNotExist(err):
+		// .new is gone, which is expected when a partial chain (e.g.
+		// geocoding-only retry) ran against the already-promoted live
+		// dir. If live exists and has source.osm.pbf, treat as a no-op
+		// success instead of forcing the user to full reinstall.
+		if live, liveErr := os.Stat(finalPath); liveErr == nil && live.IsDir() {
+			if _, pbfErr := os.Stat(filepath.Join(finalPath, "source.osm.pbf")); pbfErr == nil {
+				log.Info().Str("path", finalPath).Msg("swap: .new absent but live dir intact; no-op")
+				return nil
+			}
+		}
 		return fmt.Errorf("swap: %q missing; chain must land source.osm.pbf first", newPath)
 	case err != nil:
 		return fmt.Errorf("swap: stat new: %w", err)

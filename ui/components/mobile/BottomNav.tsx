@@ -3,8 +3,14 @@
 import type { ReactNode } from "react";
 import { Bookmark, MapPin, Route, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { usePlaceStore } from "@/lib/state/place";
 import { useMapStore, type LeftRailTab } from "@/lib/state/map";
 import type { SheetSnap } from "./BottomSheet";
+
+/** Mobile-only "Place" pseudo-tab. Picked when a `selectedFeature`
+ *  exists — surfaces the bottom-center PointInfoCard rather than
+ *  flipping the LeftRailTab union. */
+type MobileNavTab = LeftRailTab | "place";
 
 /**
  * 4-tab bottom nav modelled on Google Maps Mobile: Search / Directions /
@@ -26,7 +32,7 @@ export interface BottomNavProps {
 }
 
 interface TabDef {
-  id: LeftRailTab;
+  id: MobileNavTab;
   label: string;
   icon: ReactNode;
 }
@@ -46,10 +52,19 @@ export function BottomNav({
 }: BottomNavProps) {
   const leftRailTab = useMapStore((s) => s.leftRailTab);
   const openLeftRail = useMapStore((s) => s.openLeftRail);
+  const selectedFeature = usePlaceStore((s) => s.selectedFeature);
 
-  const onSelect = (id: LeftRailTab) => {
-    const sameTab = id === leftRailTab;
-    openLeftRail(id);
+  // The active pseudo-tab is `place` whenever a feature is selected
+  // (so the user can spot what they last clicked); otherwise we
+  // mirror the canonical `leftRailTab` from the store.
+  const activeTab: MobileNavTab =
+    hasPlace && selectedFeature ? "place" : leftRailTab;
+
+  const onSelect = (id: MobileNavTab) => {
+    const sameTab = id === activeTab;
+    if (id !== "place") {
+      openLeftRail(id);
+    }
     if (sameTab && snap !== "peek") {
       onSnapChange("peek");
       return;
@@ -69,7 +84,7 @@ export function BottomNav({
       )}
     >
       {tabs.map((t) => {
-        const active = leftRailTab === t.id;
+        const active = activeTab === t.id;
         return (
           <button
             key={t.id}

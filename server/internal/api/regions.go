@@ -122,6 +122,34 @@ func (h *RegionsHTTP) regionsUpdateHandler(c fiber.Ctx) error {
 	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"jobId": job.ID})
 }
 
+// regionsActivateHandler — POST /api/regions/{name}/activate (admin)
+//
+// Flips `routing.activeRegion` to {name} and drops the pointer file
+// at <DataDir>/regions/.active-region. Valhalla's startup loop polls
+// that file every ~5s and re-execs against the named region's tiles.
+func (h *RegionsHTTP) regionsActivateHandler(c fiber.Ctx) error {
+	user := "system"
+	if id := auth.FromCtx(c); id != nil {
+		user = id.Username
+	}
+	region, err := h.Svc.Activate(c.Context(), c.Params("name"), user)
+	if errors.Is(err, regions.ErrNotFound) {
+		return apierr.Write(c, apierr.CodeRegionNotInstalled,
+			"region not installed", false)
+	}
+	if errors.Is(err, regions.ErrConflict) {
+		return apierr.Write(c, apierr.CodeConflict,
+			"region must be in 'ready' state to be activated", false)
+	}
+	if err != nil {
+		return apierr.Write(c, apierr.CodeInternal, err.Error(), true)
+	}
+	return c.JSON(fiber.Map{
+		"region":       region,
+		"activeRegion": region.Name,
+	})
+}
+
 // regionsScheduleHandler — PUT /api/regions/{name}/schedule (admin)
 func (h *RegionsHTTP) regionsScheduleHandler(c fiber.Ctx) error {
 	var body struct {
@@ -184,6 +212,7 @@ type regionsRouteSet interface {
 	regionsDeleteHandler(c fiber.Ctx) error
 	regionsUpdateHandler(c fiber.Ctx) error
 	regionsScheduleHandler(c fiber.Ctx) error
+	regionsActivateHandler(c fiber.Ctx) error
 }
 
 // regionsStub is the 501 fallback when no Service is wired.
@@ -196,3 +225,4 @@ func (regionsStub) regionsGetHandler(c fiber.Ctx) error      { return notImpleme
 func (regionsStub) regionsDeleteHandler(c fiber.Ctx) error   { return notImplemented(c) }
 func (regionsStub) regionsUpdateHandler(c fiber.Ctx) error   { return notImplemented(c) }
 func (regionsStub) regionsScheduleHandler(c fiber.Ctx) error { return notImplemented(c) }
+func (regionsStub) regionsActivateHandler(c fiber.Ctx) error { return notImplemented(c) }

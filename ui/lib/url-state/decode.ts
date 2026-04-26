@@ -28,10 +28,10 @@ const VALID_MODES: readonly RouteMode[] = [
 ];
 const VALID_TABS: readonly LeftRailTab[] = [
   "search",
-  "results",
   "directions",
-  "place",
   "saved",
+  "recents",
+  "categoryResults",
 ];
 
 function parseUrl(input: string | URL): URL | null {
@@ -106,6 +106,16 @@ export function decodeURL(input: string | URL): DecodedState | null {
     if (vp) out.viewport = vp;
   }
 
+  // Share-button compatibility: the bottom info card's "Copy link"
+  // affordance writes `?lat=&lon=&zoom=&place=`. Decode it into the
+  // same DecodedState shape the canonical encoder produces so the
+  // single restore path (`applyDecoded`) handles both. The hash form
+  // (`#zoom/lat/lon`) wins when both are present.
+  if (!out.viewport) {
+    const flatVp = parseFlatViewportParams(url.searchParams);
+    if (flatVp) out.viewport = flatVp;
+  }
+
   const region = url.searchParams.get("r");
   if (region && isCanonicalRegionKey(region)) {
     out.activeRegion = region;
@@ -116,7 +126,10 @@ export function decodeURL(input: string | URL): DecodedState | null {
     out.leftRailTab = tab as LeftRailTab;
   }
 
-  const poi = url.searchParams.get("poi");
+  // `poi` (canonical) and `place` (share-button) both round-trip a
+  // POI id. Prefer `poi` when both are set so the canonical encoder
+  // takes precedence on re-shares.
+  const poi = url.searchParams.get("poi") ?? url.searchParams.get("place");
   if (poi && poi.length > 0 && poi.length < 512) {
     out.selectedPoiId = poi;
   }
@@ -133,4 +146,31 @@ export function decodeURL(input: string | URL): DecodedState | null {
   }
 
   return out;
+}
+
+/** Parse the `?lat=&lon=&zoom=` triple emitted by the share-button. */
+function parseFlatViewportParams(
+  params: URLSearchParams,
+): import("@/lib/url-state").MapViewport | null {
+  const latRaw = params.get("lat");
+  const lonRaw = params.get("lon");
+  const zoomRaw = params.get("zoom");
+  if (!latRaw || !lonRaw) return null;
+  const lat = Number.parseFloat(latRaw);
+  const lon = Number.parseFloat(lonRaw);
+  const zoom = zoomRaw ? Number.parseFloat(zoomRaw) : 15;
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lon) ||
+    !Number.isFinite(zoom) ||
+    lat < -90 ||
+    lat > 90 ||
+    lon < -180 ||
+    lon > 180 ||
+    zoom < 0 ||
+    zoom > 24
+  ) {
+    return null;
+  }
+  return { lat, lon, zoom, bearing: 0, pitch: 0 };
 }

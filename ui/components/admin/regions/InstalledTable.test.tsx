@@ -142,6 +142,108 @@ describe("<InstalledTable />", () => {
     ).toBeDisabled();
   });
 
+  describe("active routing region", () => {
+    it("renders an Active pill on the active row", () => {
+      wrap(
+        <InstalledTable
+          regions={[ready, failed]}
+          pendingByName={{}}
+          activeRegionName="europe-romania"
+          onUpdateNow={() => {}}
+          onScheduleChange={() => {}}
+          onDelete={() => {}}
+          onActivate={() => {}}
+        />,
+      );
+      // The active row is decorated with a "Use for routing" omission and
+      // a visible Active label / aria-label.
+      expect(
+        screen.getByLabelText("Active routing region"),
+      ).toBeInTheDocument();
+    });
+
+    it("hides Use-for-routing on the already-active row", () => {
+      wrap(
+        <InstalledTable
+          regions={[ready]}
+          pendingByName={{}}
+          activeRegionName="europe-romania"
+          onUpdateNow={() => {}}
+          onScheduleChange={() => {}}
+          onDelete={() => {}}
+          onActivate={() => {}}
+        />,
+      );
+      expect(
+        screen.queryByRole("button", { name: /use romania for routing/i }),
+      ).toBeNull();
+    });
+
+    it("clicking Use-for-routing fires the onActivate callback", async () => {
+      const user = userEvent.setup();
+      const onActivate = vi.fn();
+      // Two ready regions so one becomes activatable.
+      const otherReady: Region = {
+        ...ready,
+        name: "europe-france",
+        displayName: "France",
+      };
+      wrap(
+        <InstalledTable
+          regions={[ready, otherReady]}
+          pendingByName={{}}
+          activeRegionName="europe-romania"
+          onUpdateNow={() => {}}
+          onScheduleChange={() => {}}
+          onDelete={() => {}}
+          onActivate={onActivate}
+        />,
+      );
+      await user.click(
+        screen.getByRole("button", { name: /use france for routing/i }),
+      );
+      expect(onActivate).toHaveBeenCalledOnce();
+      expect(onActivate.mock.calls[0]?.[0]?.name).toBe("europe-france");
+    });
+
+    it("disables Use-for-routing while pending", () => {
+      const otherReady: Region = {
+        ...ready,
+        name: "europe-france",
+        displayName: "France",
+      };
+      wrap(
+        <InstalledTable
+          regions={[ready, otherReady]}
+          pendingByName={{ [otherReady.name]: "activate" }}
+          activeRegionName="europe-romania"
+          onUpdateNow={() => {}}
+          onScheduleChange={() => {}}
+          onDelete={() => {}}
+          onActivate={() => {}}
+        />,
+      );
+      expect(
+        screen.getByRole("button", { name: /use france for routing/i }),
+      ).toBeDisabled();
+    });
+
+    it("ready-but-non-active rows omit Use-for-routing when no onActivate is supplied", () => {
+      wrap(
+        <InstalledTable
+          regions={[ready]}
+          pendingByName={{}}
+          onUpdateNow={() => {}}
+          onScheduleChange={() => {}}
+          onDelete={() => {}}
+        />,
+      );
+      expect(
+        screen.queryByRole("button", { name: /use romania for routing/i }),
+      ).toBeNull();
+    });
+  });
+
   describe("mobile card layout", () => {
     it("renders a card list (not a table) when forceMobile is set", () => {
       wrap(

@@ -12,6 +12,7 @@
   "search.ariaLabel": "Search maps",
   "search.clear": "Clear search",
   "search.openMenu": "Open menu",
+  "search.directions": "Get directions",
   "search.empty.noResults": "No matches. Check your spelling or broaden your search.",
   "search.empty.prompt": "Try searching for a city, a landmark, or an address.",
   "search.empty.noRegions": "Install a region from Admin → Regions to search offline data.",

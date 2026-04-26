@@ -18,10 +18,14 @@ import { useMessages } from "@/lib/i18n/provider";
  */
 export interface InstalledTableProps {
   regions: Region[];
-  pendingByName: Record<string, "update" | "schedule" | "delete" | null>;
+  pendingByName: Record<string, "update" | "schedule" | "delete" | "activate" | null>;
   onUpdateNow: (region: Region) => void;
   onScheduleChange: (region: Region, next: string) => void;
   onDelete: (region: Region) => void;
+  /** Optional: when provided, render the "Use for routing" action. */
+  onActivate?: (region: Region) => void;
+  /** Canonical key of the region currently serving routing requests. */
+  activeRegionName?: string | null;
   className?: string;
   /** Test seam: force the card layout regardless of viewport. */
   forceMobile?: boolean;
@@ -33,6 +37,8 @@ export function InstalledTable({
   onUpdateNow,
   onScheduleChange,
   onDelete,
+  onActivate,
+  activeRegionName,
   className,
   forceMobile,
 }: InstalledTableProps) {
@@ -72,6 +78,8 @@ export function InstalledTable({
             onUpdateNow={onUpdateNow}
             onScheduleChange={onScheduleChange}
             onDelete={onDelete}
+            onActivate={onActivate}
+            isActiveRouting={activeRegionName === r.name}
             pendingAction={pendingByName[r.name] ?? null}
           />
         ))}
@@ -115,6 +123,8 @@ export function InstalledTable({
               onUpdateNow={onUpdateNow}
               onScheduleChange={onScheduleChange}
               onDelete={onDelete}
+              onActivate={onActivate}
+              isActiveRouting={activeRegionName === r.name}
               pendingAction={pendingByName[r.name] ?? null}
             />
           ))}

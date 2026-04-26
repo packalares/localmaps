@@ -123,7 +123,10 @@ func (r *PlanetilerRunner) buildArgs(pbfPath, out string) []string {
 		fmt.Sprintf("-Xmx%dm", r.Cfg.MemoryMB),
 		"-jar", r.Cfg.JarPath,
 		"--osm-path=" + pbfPath, "--output=" + out,
-		"--download=false", "--force",
+		// Planetiler needs aux sources (lake_centerline, natural_earth,
+		// water_polygons). --download=true fetches them on first run and
+		// reuses the cache under $PWD/data/sources afterwards.
+		"--download=true", "--force",
 	}
 	return append(a, r.Cfg.ExtraArgs...)
 }

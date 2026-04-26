@@ -313,6 +313,17 @@ export const RegionDeleteResponseSchema = z.object({
 });
 export type RegionDeleteResponse = z.infer<typeof RegionDeleteResponseSchema>;
 
+// POST /api/regions/{name}/activate — returns { region, activeRegion }
+//
+// Sets `routing.activeRegion` and writes the pointer file Valhalla polls
+// for live region switching. Response carries the canonical name of the
+// region now serving routing.
+export const RegionActivateResponseSchema = z.object({
+  region: RegionSchema,
+  activeRegion: z.string(),
+});
+export type RegionActivateResponse = z.infer<typeof RegionActivateResponseSchema>;
+
 // WebSocket event envelope (server → client). See openapi /api/ws description.
 export const WsEventTypeSchema = z.enum([
   "region.progress",

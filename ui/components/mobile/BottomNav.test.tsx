@@ -9,7 +9,6 @@ describe("<BottomNav />", () => {
     useMapStore.setState((s) => ({
       ...s,
       leftRailTab: "search",
-      selectedPoi: null,
     }));
   });
 

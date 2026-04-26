@@ -72,6 +72,16 @@ const config: Config = {
       boxShadow: {
         chrome:
           "0 1px 2px hsl(var(--chrome-shadow) / 0.08), 0 4px 12px hsl(var(--chrome-shadow) / 0.12)",
+        /** Subtle elevation for floating chrome (FabStack, LayersCard,
+         *  SearchBar pill). Lighter than the panel-grade `chrome` shadow. */
+        "chrome-sm":
+          "0 1px 2px hsl(var(--chrome-shadow) / 0.06), 0 1px 3px hsl(var(--chrome-shadow) / 0.10)",
+        /** Heavier elevation for sheet / dropdown / point-info card. */
+        "chrome-lg":
+          "0 4px 8px hsl(var(--chrome-shadow) / 0.10), 0 12px 24px hsl(var(--chrome-shadow) / 0.16)",
+      },
+      ringColor: {
+        chrome: "hsl(var(--chrome-border))",
       },
       fontFamily: {
         sans: ["var(--font-sans)", "system-ui", "sans-serif"],

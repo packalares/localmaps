@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import type { Map as MapLibreMap } from "maplibre-gl";
 import type { MapViewport } from "@/lib/url-state";
-import type { GeocodeResult, Region } from "@/lib/api/schemas";
+import type { Poi, Region } from "@/lib/api/schemas";
 
 /**
  * Client-only map state. Server state (routes, POIs, geocode results,
@@ -11,17 +11,12 @@ import type { GeocodeResult, Region } from "@/lib/api/schemas";
  * the user's latest interaction produced in the browser plus the shared
  * references other feature modules need (MapLibre instance, pending
  * click/contextmenu, the active region key).
+ *
+ * Selection state for the bottom info card lives in the separate
+ * `usePlaceStore` (`lib/state/place.ts`) under `selectedFeature`. That
+ * is the canonical surface — there is no `selectedPoi` / `selectedResult`
+ * shadow on this store.
  */
-
-/** Selected POI (from `/api/pois/{id}` or a click-resolve). */
-export interface SelectedPoi {
-  id: string;
-  label: string;
-  lat: number;
-  lon: number;
-  /** Free-form subtitle, e.g. address or category. */
-  subtitle?: string;
-}
 
 /** The currently-rendered route, if any. */
 export interface ActiveRoute {
@@ -46,14 +41,50 @@ export interface PendingPointerEvent {
 /** Tabs in the left rail; the search pill routes into `search`. */
 export type LeftRailTab =
   | "search"
-  | "results"
   | "directions"
-  | "place"
-  | "saved";
+  | "saved"
+  | "recents"
+  | "categoryResults";
+
+/** Centralised exhaustive switch helper. Every consumer that branches
+ *  on `LeftRailTab` should pass through this so adding a new tab
+ *  triggers a TS error in every reader. */
+export function assertNeverTab(tab: never): never {
+  throw new Error(`Unhandled LeftRailTab: ${String(tab)}`);
+}
+
+/**
+ * Canonical POI category keys. The server-side map style ships paired
+ * `poi-<category>` (icon) and `poi-<category>-label` (label) layers using
+ * exactly these suffixes — changing one of these strings without also
+ * updating the style would silently break the toggle.
+ */
+export const POI_CATEGORIES = [
+  "food",
+  "shopping",
+  "lodging",
+  "transit",
+  "healthcare",
+  "services",
+  "entertainment",
+  "education",
+  "other",
+] as const;
+
+export type PoiCategory = (typeof POI_CATEGORIES)[number];
+
+/** localStorage key for persisted POI visibility toggles. */
+export const POI_VISIBILITY_STORAGE_KEY = "localmaps.poi.visibility.v1";
+
+/** Default state: every category visible. */
+export function defaultPoiVisibility(): Record<PoiCategory, boolean> {
+  const out = {} as Record<PoiCategory, boolean>;
+  for (const c of POI_CATEGORIES) out[c] = true;
+  return out;
+}
 
 export interface MapState {
   viewport: MapViewport;
-  selectedPoi: SelectedPoi | null;
   activeRoute: ActiveRoute | null;
 
   /** The live MapLibre instance, set by MapView once the style has loaded. */
@@ -68,13 +99,47 @@ export interface MapState {
   /** Latest right-click pending consumption by the context menu. */
   pendingContextmenu: PendingPointerEvent | null;
 
-  /** The GeocodeResult the user most recently picked from search. */
-  selectedResult: GeocodeResult | null;
   /** Which tab of the left rail is currently visible. */
   leftRailTab: LeftRailTab;
 
+  /** True while the floating SearchBar's dropdown is open (input
+   *  focused or showing autocomplete). Read by SelectedFeatureSync to
+   *  cascade-close on map click before dropping a pin. */
+  searchDropdownOpen: boolean;
+  setSearchDropdownOpen: (open: boolean) => void;
+
+  /** Increment to ask the floating SearchBar to clear its local query
+   *  state. Used by the side-panel close X (which doesn't otherwise
+   *  reach into SearchBar's local React state). */
+  searchClearToken: number;
+  requestClearSearchQuery: () => void;
+
+  /** Per-category POI visibility toggles, persisted to localStorage. */
+  poiVisibility: Record<PoiCategory, boolean>;
+
+  /**
+   * The category chip currently firing a search (pins visible, dropdown
+   * open). `null` means no chip is active. Only one chip can be active
+   * at a time — re-clicking the active chip clears it back to `null`.
+   */
+  activeCategoryChip: PoiCategory | null;
+  /**
+   * Search results for the active chip. Empty array means "query in
+   * flight or no hits"; only meaningful while `activeCategoryChip` is
+   * non-null. Consumers render these as red pins + a dropdown list.
+   */
+  categorySearchResults: Poi[];
+  /**
+   * Bbox captured at the moment a chip became active (Google-Maps "search
+   * THIS area" semantics). Frozen for the chip's lifetime so subsequent
+   * pan/zoom does NOT refire the query — the user explicitly clicks the
+   * chip again to re-search the new viewport. Format: the same
+   * `minLon,minLat,maxLon,maxLat` string the gateway expects, so the
+   * hook can hand it through verbatim.
+   */
+  categorySearchBbox: string | null;
+
   setViewport: (viewport: MapViewport) => void;
-  setSelectedPoi: (poi: SelectedPoi | null) => void;
   setActiveRoute: (route: ActiveRoute | null) => void;
   setMap: (map: MapLibreMap | null) => void;
   setActiveRegion: (region: string | null) => void;
@@ -85,11 +150,89 @@ export interface MapState {
   clearPendingClick: () => void;
   /** Clears the most recent right-click after a consumer has handled it. */
   clearPendingContextmenu: () => void;
-  setSelectedResult: (result: GeocodeResult | null) => void;
   /** Switch the left rail to the given tab (and ensure it's rendered). */
   openLeftRail: (tab: LeftRailTab) => void;
+  /** Flip a single POI category between visible and hidden. */
+  togglePoiCategory: (cat: PoiCategory) => void;
+  /** Force one category to a specific visibility. */
+  setPoiVisibility: (cat: PoiCategory, visible: boolean) => void;
+  /** Replace the whole POI visibility map at once (used by shift-click solo). */
+  replacePoiVisibility: (next: Record<PoiCategory, boolean>) => void;
+  /**
+   * Promote `cat` into the active chip slot. The HTTP fetch lives in a
+   * caller-side effect (`runCategorySearch` below only flips the store;
+   * `PoiSearchChips` owns the fetch so it can bind to TanStack Query's
+   * lifecycle). Passing the same `cat` twice clears the active state —
+   * Google-Maps chip UX.
+   */
+  setActiveCategoryChip: (cat: PoiCategory | null) => void;
+  /** Replace the latest category-search result set. */
+  setCategorySearchResults: (results: Poi[]) => void;
+  /**
+   * Replace the bbox snapshot used for the active chip search. Drops
+   * automatically when the chip clears; callers normally just pass a
+   * fresh viewport-derived string at the moment the chip is clicked.
+   */
+  setCategorySearchBbox: (bbox: string | null) => void;
+  /**
+   * Google-Maps chip action: "if active, clear; otherwise mark as
+   * active". The real fetch + pin rendering is orchestrated by the
+   * `PoiSearchChips` component which watches `activeCategoryChip`.
+   * Optional `bbox` is captured AT THE MOMENT OF ACTIVATION and frozen
+   * for the chip's lifetime — pan/zoom does not refresh the result set
+   * (Change 7). Pass null to leave the bbox untouched (e.g. tests).
+   */
+  runCategorySearch: (cat: PoiCategory, bbox?: string | null) => void;
+  /**
+   * Full-reset closer for the chip results panel: clears the chip, the
+   * markers, the frozen bbox, and slides the rail back to `search`.
+   * Used by the panel's X button and the search-bar's clear-X while a
+   * chip is active.
+   */
+  closeCategoryResults: () => void;
   /** Resets every field to its initial state; used on sign-out / tests. */
   clear: () => void;
+}
+
+/**
+ * Read the persisted visibility map from localStorage, discarding anything
+ * stale (wrong shape, unknown categories, etc.) and backfilling missing
+ * categories with `true` so new categories added to the style light up by
+ * default rather than appearing hidden.
+ */
+function loadPoiVisibility(): Record<PoiCategory, boolean> {
+  const base = defaultPoiVisibility();
+  if (typeof window === "undefined") return base;
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(POI_VISIBILITY_STORAGE_KEY);
+  } catch {
+    return base;
+  }
+  if (!raw) return base;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return base;
+    const record = parsed as Record<string, unknown>;
+    for (const c of POI_CATEGORIES) {
+      if (typeof record[c] === "boolean") base[c] = record[c] as boolean;
+    }
+    return base;
+  } catch {
+    return base;
+  }
+}
+
+function persistPoiVisibility(next: Record<PoiCategory, boolean>): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      POI_VISIBILITY_STORAGE_KEY,
+      JSON.stringify(next),
+    );
+  } catch {
+    // localStorage unavailable (private mode, quota). Silently ignore.
+  }
 }
 
 /** Initial viewport when URL hash is absent and settings provide no default. */
@@ -101,9 +244,8 @@ export const DEFAULT_VIEWPORT: MapViewport = {
   pitch: 0,
 };
 
-export const useMapStore = create<MapState>((set) => ({
+export const useMapStore = create<MapState>((set, get) => ({
   viewport: DEFAULT_VIEWPORT,
-  selectedPoi: null,
   activeRoute: null,
 
   map: null,
@@ -113,11 +255,20 @@ export const useMapStore = create<MapState>((set) => ({
   pendingClick: null,
   pendingContextmenu: null,
 
-  selectedResult: null,
   leftRailTab: "search",
+  searchDropdownOpen: false,
+  setSearchDropdownOpen: (open) => set({ searchDropdownOpen: open }),
+  searchClearToken: 0,
+  requestClearSearchQuery: () =>
+    set((s) => ({ searchClearToken: s.searchClearToken + 1 })),
+
+  poiVisibility: loadPoiVisibility(),
+
+  activeCategoryChip: null,
+  categorySearchResults: [],
+  categorySearchBbox: null,
 
   setViewport: (viewport) => set({ viewport }),
-  setSelectedPoi: (selectedPoi) => set({ selectedPoi }),
   setActiveRoute: (activeRoute) => set({ activeRoute }),
   setMap: (map) => set({ map }),
   setActiveRegion: (activeRegion) => set({ activeRegion }),
@@ -126,19 +277,87 @@ export const useMapStore = create<MapState>((set) => ({
   setPendingContextmenu: (pendingContextmenu) => set({ pendingContextmenu }),
   clearPendingClick: () => set({ pendingClick: null }),
   clearPendingContextmenu: () => set({ pendingContextmenu: null }),
-  setSelectedResult: (selectedResult) => set({ selectedResult }),
   openLeftRail: (leftRailTab) => set({ leftRailTab }),
+  togglePoiCategory: (cat) => {
+    const current = get().poiVisibility;
+    const next = { ...current, [cat]: !current[cat] };
+    persistPoiVisibility(next);
+    set({ poiVisibility: next });
+  },
+  setPoiVisibility: (cat, visible) => {
+    const current = get().poiVisibility;
+    if (current[cat] === visible) return;
+    const next = { ...current, [cat]: visible };
+    persistPoiVisibility(next);
+    set({ poiVisibility: next });
+  },
+  replacePoiVisibility: (next) => {
+    persistPoiVisibility(next);
+    set({ poiVisibility: { ...next } });
+  },
+  setActiveCategoryChip: (cat) =>
+    set(
+      cat === null
+        ? {
+            activeCategoryChip: null,
+            categorySearchResults: [],
+            categorySearchBbox: null,
+          }
+        : { activeCategoryChip: cat },
+    ),
+  setCategorySearchResults: (categorySearchResults) =>
+    set({ categorySearchResults }),
+  setCategorySearchBbox: (categorySearchBbox) => set({ categorySearchBbox }),
+  runCategorySearch: (cat, bbox) => {
+    const current = get().activeCategoryChip;
+    const currentTab = get().leftRailTab;
+    if (current === cat) {
+      // Re-clicking the active chip clears pins + closes the side panel
+      // if it was showing the chip results.
+      set({
+        activeCategoryChip: null,
+        categorySearchResults: [],
+        categorySearchBbox: null,
+        leftRailTab:
+          currentTab === "categoryResults" ? "search" : currentTab,
+      });
+      return;
+    }
+    // Flip to the new chip; results for the previous category are
+    // discarded so the caller's effect can fire a fresh request. Also
+    // open the side-panel tab so the result list slides in. The bbox
+    // captured here is frozen — the chip's category-search hook reads
+    // from it and will NOT refire when the user pans/zooms.
+    set({
+      activeCategoryChip: cat,
+      categorySearchResults: [],
+      categorySearchBbox: bbox ?? null,
+      leftRailTab: "categoryResults",
+    });
+  },
+  closeCategoryResults: () => {
+    const currentTab = get().leftRailTab;
+    set({
+      activeCategoryChip: null,
+      categorySearchResults: [],
+      categorySearchBbox: null,
+      leftRailTab:
+        currentTab === "categoryResults" ? "search" : currentTab,
+    });
+  },
   clear: () =>
     set({
       viewport: DEFAULT_VIEWPORT,
-      selectedPoi: null,
       activeRoute: null,
       map: null,
       activeRegion: null,
       installedRegions: [],
       pendingClick: null,
       pendingContextmenu: null,
-      selectedResult: null,
       leftRailTab: "search",
+      poiVisibility: defaultPoiVisibility(),
+      activeCategoryChip: null,
+      categorySearchResults: [],
+      categorySearchBbox: null,
     }),
 }));

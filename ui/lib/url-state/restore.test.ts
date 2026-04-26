@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { applyDecoded, useRestoreOnMount } from "./restore";
 import { useMapStore, DEFAULT_VIEWPORT } from "@/lib/state/map";
+import { usePlaceStore } from "@/lib/state/place";
 import {
   useDirectionsStore,
   DEFAULT_OPTIONS,
@@ -10,6 +11,7 @@ import {
 
 function resetStores() {
   useMapStore.getState().clear();
+  usePlaceStore.getState().clearSelectedFeature();
   useDirectionsStore.setState({
     waypoints: DEFAULT_WAYPOINTS(),
     mode: "auto",
@@ -37,14 +39,16 @@ describe("applyDecoded", () => {
     applyDecoded({
       viewport: { lat: 44, lon: 26, zoom: 10, bearing: 0, pitch: 0 },
       activeRegion: "europe-romania",
-      leftRailTab: "place",
+      leftRailTab: "saved",
       selectedPoiId: "osm:node:1",
     });
     const s = useMapStore.getState();
     expect(s.viewport.lat).toBe(44);
     expect(s.activeRegion).toBe("europe-romania");
-    expect(s.leftRailTab).toBe("place");
-    expect(s.selectedPoi?.id).toBe("osm:node:1");
+    expect(s.leftRailTab).toBe("saved");
+    // POI id is stamped onto the place store (canonical surface for
+    // the bottom info card) — not the deleted `selectedPoi` slice.
+    expect(usePlaceStore.getState().selectedFeature?.id).toBe("osm:node:1");
   });
 
   it("applies directions route + waypoints + options + mode", () => {

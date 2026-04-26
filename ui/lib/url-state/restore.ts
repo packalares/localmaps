@@ -2,6 +2,7 @@
 
 import { useLayoutEffect, useRef } from "react";
 import { useMapStore } from "@/lib/state/map";
+import { usePlaceStore } from "@/lib/state/place";
 import {
   useDirectionsStore,
   type Waypoint,
@@ -36,6 +37,7 @@ export function useRestoreOnMount(): void {
 export function applyDecoded(decoded: DecodedState): void {
   const mapStore = useMapStore.getState();
   const dirStore = useDirectionsStore.getState();
+  const placeStore = usePlaceStore.getState();
 
   if (decoded.viewport) {
     mapStore.setViewport(decoded.viewport);
@@ -47,12 +49,13 @@ export function applyDecoded(decoded: DecodedState): void {
     mapStore.openLeftRail(decoded.leftRailTab);
   }
   if (decoded.selectedPoiId) {
-    // We only have an id from the URL — stamp a minimal shell so the UI
-    // can immediately reflect "a POI is selected"; a full fetch via
-    // `/api/pois/{id}` is outside this agent's scope.
-    mapStore.setSelectedPoi({
+    // We only have an id from the URL — stamp a minimal POI feature on
+    // the place store so the bottom info card surfaces immediately.
+    // A full fetch via `/api/pois/{id}` happens lazily inside the
+    // PointInfoCard via TanStack Query.
+    placeStore.setSelectedFeature({
+      kind: "poi",
       id: decoded.selectedPoiId,
-      label: "",
       lat: decoded.viewport?.lat ?? 0,
       lon: decoded.viewport?.lon ?? 0,
     });

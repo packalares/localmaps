@@ -19,10 +19,12 @@ function renderSearchBar() {
 describe("<SearchBar />", () => {
   beforeEach(() => {
     // Reset the store between tests.
+    useMapStore.getState().clear();
     useMapStore.setState((s) => ({ ...s, leftRailTab: "saved" }));
   });
 
   afterEach(() => {
+    useMapStore.getState().clear();
     vi.restoreAllMocks();
   });
 
@@ -87,5 +89,66 @@ describe("<SearchBar />", () => {
     await user.keyboard("{Escape}");
     expect(input.value).toBe("");
     expect(document.activeElement).not.toBe(input);
+  });
+
+  it("displays the chip label when a chip is active (Change 3)", () => {
+    useMapStore.getState().setActiveCategoryChip("food");
+    renderSearchBar();
+    const input = screen.getByRole("searchbox", {
+      name: /search maps/i,
+    }) as HTMLInputElement;
+    expect(input.value).toBe("Food & drink");
+  });
+
+  it("clear-X full-resets when a chip is active (Change 3 + closing)", async () => {
+    const user = userEvent.setup();
+    useMapStore.getState().runCategorySearch("food", null);
+    renderSearchBar();
+    expect(useMapStore.getState().activeCategoryChip).toBe("food");
+    await user.click(
+      screen.getByRole("button", { name: /clear search/i }),
+    );
+    expect(useMapStore.getState().activeCategoryChip).toBeNull();
+    expect(useMapStore.getState().categorySearchResults).toEqual([]);
+  });
+
+  it("typing a full chip name only auto-activates after Enter (F12)", async () => {
+    const user = userEvent.setup();
+    renderSearchBar();
+    const input = screen.getByRole("searchbox", { name: /search maps/i });
+    await user.click(input);
+    await user.type(input, "Hotels");
+    // No auto-activation while typing — that path was racing the user
+    // mid-type and triggering the chip search before the user finished
+    // a phrase like "Hotels in Munich".
+    expect(useMapStore.getState().activeCategoryChip).toBeNull();
+    await user.keyboard("{Enter}");
+    expect(useMapStore.getState().activeCategoryChip).toBe("lodging");
+  });
+
+  it("typing a full chip name + blur also activates (F12 fallback)", async () => {
+    const user = userEvent.setup();
+    renderSearchBar();
+    const input = screen.getByRole("searchbox", { name: /search maps/i });
+    await user.click(input);
+    await user.type(input, "Hotels");
+    expect(useMapStore.getState().activeCategoryChip).toBeNull();
+    await user.tab();
+    expect(useMapStore.getState().activeCategoryChip).toBe("lodging");
+  });
+
+  it("typing while a chip is active clears the chip first (Change 4)", async () => {
+    const user = userEvent.setup();
+    useMapStore.getState().setActiveCategoryChip("food");
+    renderSearchBar();
+    const input = screen.getByRole("searchbox", {
+      name: /search maps/i,
+    }) as HTMLInputElement;
+    await user.click(input);
+    // Typing a single character clears the chip first; the visible
+    // value drops the old label and only shows the new char.
+    await user.type(input, "a");
+    expect(useMapStore.getState().activeCategoryChip).toBeNull();
+    expect(input.value).toBe("a");
   });
 });

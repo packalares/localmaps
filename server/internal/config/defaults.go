@@ -58,6 +58,7 @@ func Defaults() []Default {
 		{"routing.valhallaBuildTimeoutMinutes", 60},
 		{"routing.valhallaExtraArgs", []string{}},
 		{"routing.valhallaTileDirName", "valhalla_tiles"},
+		{"routing.activeRegion", ""},
 
 		// --- tiles.* --------------------------------------------------
 		{"tiles.source", "protomaps"},
@@ -87,6 +88,7 @@ func Defaults() []Default {
 		{"regions.keepSourcePbf", true},
 		{"regions.archivedRetentionDays", 30},
 		{"regions.maxConcurrentBuilds", 1},
+		{"regions.deletePurgesPelias", true},
 
 		// --- share.* --------------------------------------------------
 		{"share.shortLinkTTLDays", 365},

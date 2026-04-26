@@ -69,12 +69,15 @@ func TestStubsReturn501WithEnvelope(t *testing.T) {
 		method, path string
 	}{
 		{"GET", "/api/tiles/metadata"},
+		// /api/geocode/* + /api/pois (search) are now real handlers;
+		// when the test app is built with an empty Boot they keep their
+		// 501 fallback, so they stay useful here to prove the stub-path
+		// still works (geocodingClient == nil).
 		{"GET", "/api/geocode/autocomplete?q=x"},
 		{"POST", "/api/route"},
-		{"GET", "/api/pois/categories"},
 		{"GET", "/api/regions"},
 		{"GET", "/api/regions/catalog"},
-		{"GET", "/api/jobs/some-id"},
+		// GET /api/jobs/{id} is a real handler now (reads from sqlite).
 		// GET /api/settings/schema is a real handler now (Phase 6 Agent S).
 		// POST /api/links is a real handler now (Phase 5 Agent R); tests
 		// for its 201 / 400 / 404 branches live in share_test.go.

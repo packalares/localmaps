@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { apiRequest } from "./client";
 import { apiUrl } from "@/lib/env";
-import { useMapStore } from "@/lib/state/map";
+import { useMapStore, type PoiCategory } from "@/lib/state/map";
 import {
   AuthMeResponseSchema,
   type AuthMeResponse,
@@ -30,6 +30,8 @@ import {
   type Poi,
   RegionCatalogResponseSchema,
   type RegionCatalogResponse,
+  RegionActivateResponseSchema,
+  type RegionActivateResponse,
   RegionDeleteResponseSchema,
   type RegionDeleteResponse,
   RegionInstallResponseSchema,
@@ -383,6 +385,52 @@ export function usePoiSearch(
   });
 }
 
+/**
+ * Category-scoped POI search constrained to the current viewport bbox.
+ * Drives the chip-row "search here for category X" flow: clicking a
+ * chip pins the returned POIs on the map + opens a dropdown listing
+ * them. Enabled only when both `bbox` and `category` are supplied, so
+ * we never accidentally send an unscoped world-wide query.
+ */
+export interface UseCategorySearchArgs {
+  /** bbox as `minLon,minLat,maxLon,maxLat` — matches gateway contract. */
+  bbox: string | null;
+  category: PoiCategory | null;
+  /** Gateway default is 50 per task spec. */
+  size?: number;
+  enabled?: boolean;
+}
+
+export function useCategorySearch(
+  args: UseCategorySearchArgs,
+): ReturnType<typeof useQuery<PoiListResponse>> {
+  const { bbox, category, size = 50, enabled } = args;
+  const isEnabled =
+    (enabled ?? true) && !!bbox && !!category && category.length > 0;
+  return useQuery({
+    queryKey: [
+      "pois",
+      "byCategory",
+      category ?? "",
+      bbox ?? "",
+      size,
+    ] as const,
+    enabled: isEnabled,
+    queryFn: ({ signal }) =>
+      apiRequest({
+        path: "/api/pois",
+        query: {
+          bbox: bbox ?? undefined,
+          category: category ?? undefined,
+          size,
+        },
+        schema: PoiListResponseSchema,
+        signal,
+      }),
+    staleTime: 30_000,
+  });
+}
+
 /** List of installed + in-progress regions on the server. Polls every 15s. */
 export function useRegions(): ReturnType<
   typeof useQuery<RegionsListResponse>
@@ -549,6 +597,34 @@ export function useDeleteRegion(): ReturnType<
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["regions", "list"] });
       qc.invalidateQueries({ queryKey: ["regions", "catalog"] });
+    },
+  });
+}
+
+// POST /api/regions/{name}/activate — switch the active routing region.
+//
+// Flips `routing.activeRegion` on the server and triggers Valhalla to
+// reload its tile graph. The mutation is fire-and-forget from the UI's
+// POV: the gateway returns immediately, but Valhalla's poll-and-restart
+// loop adds a few seconds before routing is back online. Callers
+// should surface that delay (toast, busy indicator) to operators.
+export function useActivateRegion(): ReturnType<
+  typeof useMutation<RegionActivateResponse, Error, { name: string }>
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: ["regions", "activate"] as const,
+    mutationFn: ({ name }) =>
+      apiRequest({
+        method: "POST",
+        path: `/api/regions/${encodeURIComponent(name)}/activate`,
+        schema: RegionActivateResponseSchema,
+      }),
+    onSuccess: () => {
+      // Active region setting lives in the settings tree; the regions
+      // list highlight reads from it, so refresh both.
+      qc.invalidateQueries({ queryKey: ["regions", "list"] });
+      qc.invalidateQueries({ queryKey: ["settings", "tree"] });
     },
   });
 }

@@ -79,19 +79,45 @@ func Register(app *fiber.App, d Deps) {
 
 	// --- map (public, rate-limited) --------------------------------
 	tilesLimit := d.Limiter.PerIP("rateLimit.tilesPerMinutePerIP")
-	app.Get("/api/tiles/:z/:x/:y.pbf", tileHandler, tilesLimit)
 	app.Get("/api/tiles/metadata", tileMetadataHandler, tilesLimit)
+	// Proxy vector tiles from the in-cluster pmtiles server. The
+	// `:region` param selects the archive (see newTileHandler doc).
+	protomapsURL := ""
+	if d.Boot != nil {
+		protomapsURL = d.Boot.ProtomapsURL
+	}
+	app.Get("/api/tiles/:region/:z/:x/:y.pbf", newTileHandler(protomapsURL), tilesLimit)
 	app.Get("/api/styles/:name.json", styleHandler, tilesLimit)
-	app.Get("/api/sprites/:name@:density.:ext", spriteHandler, tilesLimit)
+	// Fiber v3's path parser uses /, -, . as segment delimiters, so `@`
+	// is NOT a splittable char — a single `:name.:ext` route matches both
+	// `default.json` and `default@2x.json`; the handler splits `@2x` out
+	// of the name internally.
+	app.Get("/api/sprites/:name.:ext", spriteHandler, tilesLimit)
 	app.Get("/api/glyphs/:fontstack/:range.pbf", glyphHandler, tilesLimit)
 
 	// --- geocode (public, rate-limited) ----------------------------
+	// Wire the pelias-api proxy client from Boot (same pattern as the
+	// Valhalla routing client above). A nil Boot keeps the handlers
+	// behaving as 501 stubs for tests that don't wire upstreams.
+	if d.Boot != nil {
+		setGeocodingClientFromBoot(d.Boot.PeliasURL, d.Boot.PeliasESURL)
+	} else {
+		setGeocodingClientFromBoot("", "")
+	}
 	geoLimit := d.Limiter.PerIP("rateLimit.geocodePerMinutePerIP")
 	app.Get("/api/geocode/autocomplete", geocodeAutocompleteHandler, geoLimit)
 	app.Get("/api/geocode/search", geocodeSearchHandler, geoLimit)
 	app.Get("/api/geocode/reverse", geocodeReverseHandler, geoLimit)
 
 	// --- routing (public, rate-limited) ----------------------------
+	// Wire the Valhalla proxy client from Boot. A nil Boot (tests that
+	// construct api.Deps{} with an in-memory store but no upstreams)
+	// leaves routingClient nil so handlers keep their 501 stub behaviour.
+	if d.Boot != nil {
+		setRoutingClientFromBoot(d.Boot.ValhallaURL)
+	} else {
+		setRoutingClientFromBoot("")
+	}
 	routeLimit := d.Limiter.PerIP("rateLimit.routePerMinutePerIP")
 	app.Post("/api/route", routeHandler, routeLimit)
 	app.Get("/api/route/:id/gpx", routeGPXHandler, routeLimit)
@@ -102,7 +128,10 @@ func Register(app *fiber.App, d Deps) {
 	// --- pois (public, rate-limited) -------------------------------
 	app.Get("/api/pois", poisQueryHandler, geoLimit)
 	app.Get("/api/pois/categories", poisCategoriesHandler, geoLimit)
-	app.Get("/api/pois/:id", poisGetHandler, geoLimit)
+	// Pelias gids contain slashes (e.g. "openstreetmap:venue:node/123"),
+	// so we need a greedy wildcard rather than a single-segment param.
+	// Fiber v3 captures `+` segments as `*1`; the handler reads it.
+	app.Get("/api/pois/+", poisGetHandler, geoLimit)
 
 	// --- regions (mixed public/admin) ------------------------------
 	adminLimit := d.Limiter.PerIP("rateLimit.regionsAdminPerMinute")
@@ -114,9 +143,11 @@ func Register(app *fiber.App, d Deps) {
 	app.Delete("/api/regions/:name", rh.regionsDeleteHandler, adminLimit, auth.Require(mgr, auth.RoleAdmin))
 	app.Post("/api/regions/:name/update", rh.regionsUpdateHandler, adminLimit, auth.Require(mgr, auth.RoleAdmin))
 	app.Put("/api/regions/:name/schedule", rh.regionsScheduleHandler, adminLimit, auth.Require(mgr, auth.RoleAdmin))
+	app.Post("/api/regions/:name/activate", rh.regionsActivateHandler, adminLimit, auth.Require(mgr, auth.RoleAdmin))
 
 	// --- jobs + WS -------------------------------------------------
-	app.Get("/api/jobs/:jobId", jobsGetHandler)
+	setJobsStore(d.Store)
+	app.Get("/api/jobs/:jobId", jobsGetHandler, auth.Require(mgr, auth.RoleAdmin))
 	app.Get("/api/ws", d.Hub.Handler())
 
 	// --- settings --------------------------------------------------

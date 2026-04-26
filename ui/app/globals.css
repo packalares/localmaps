@@ -103,6 +103,73 @@
 @layer utilities {
   /* The Google-Maps-style floating chrome surface */
   .chrome-card {
-    @apply rounded-lg bg-chrome-surface text-foreground shadow-chrome ring-1 ring-chrome-border;
+    @apply rounded-lg bg-chrome-surface text-foreground shadow-chrome ring-1 ring-chrome;
   }
+
+  /* Same surface + ring as `chrome-card` but with the lighter `shadow-chrome-sm`
+     elevation, used for the always-visible floating chrome (search pill,
+     FabStack, LayersCard tile). Border-radius is left to the caller because
+     the FabStack uses `rounded-lg` while the search pill uses `rounded-full`. */
+  .chrome-surface-sm {
+    @apply bg-chrome-surface text-foreground shadow-chrome-sm ring-1 ring-chrome;
+  }
+
+  /* Heavier elevation, used for the dropped pin / search dropdown card. */
+  .chrome-surface-lg {
+    @apply bg-chrome-surface text-foreground shadow-chrome-lg ring-1 ring-chrome;
+  }
+
+  /* Hide native scrollbars while keeping scroll behaviour. Used by the
+     POI category chip row so the overflow-x-auto fallback is silent. */
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/*
+ * MapLibre stacks bottom-right children top-down by default, which puts
+ * the scale strip ABOVE the attribution chip. The Google Maps layout we
+ * mirror keeps both on the same row — scale to the LEFT of attribution
+ * — so we flip the bottom-right control container to flex-row-reverse
+ * and align it to the baseline. The other corners keep their default
+ * column layout.
+ */
+.maplibregl-ctrl-bottom-right {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 6px;
+  /* Pin to the actual bottom edge so the FabStack (which sits at
+     bottom-10 = 40px above) never overlaps. */
+  bottom: 6px !important;
+  right: 8px !important;
+  font-size: 11px;
+}
+.maplibregl-ctrl-bottom-right > .maplibregl-ctrl {
+  margin: 0;
+}
+/* Drop the default white background + box shadow on the inline
+   attribution so it reads as a Google-Maps-style text strip. */
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib {
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 4px !important;
+  font-size: 11px;
+  color: #5f6368;
+}
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl-attrib a {
+  color: #5f6368;
+}
+/* Match the scale to the same flat-text vibe (no border box). */
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl-scale {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 2px solid #5f6368 !important;
+  padding: 0 4px !important;
+  font-size: 11px;
+  color: #5f6368;
 }

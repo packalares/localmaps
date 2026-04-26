@@ -368,6 +368,13 @@ components:
           type: string
           enum: [overture, osm]
         region: { type: string, nullable: true }
+        hours: { type: string }
+        phone: { type: string }
+        website: { type: string }
+        wheelchair: { type: string }
+        cuisine: { type: string }
+        brand: { type: string }
+        email: { type: string }
 
     PoiCategory:
       type: object
@@ -476,11 +483,15 @@ components:
 
 paths:
   # --- MAP TILES -----------------------------------------------------
-  /api/tiles/{z}/{x}/{y}.pbf:
+  /api/tiles/{region}/{z}/{x}/{y}.pbf:
     get:
       tags: [map]
-      summary: Vector tile for a coord/zoom.
+      summary: Vector tile for a coord/zoom, proxied from the regional pmtiles archive.
       parameters:
+        - in: path
+          name: region
+          required: true
+          schema: { type: string }
         - in: path
           name: z
           required: true

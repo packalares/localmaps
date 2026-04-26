@@ -120,7 +120,9 @@ func (r *ValhallaRunner) Run(ctx context.Context, region string, paths RegionPat
 			args: []string{"--config", cfgPath, paths.PbfPath},
 			fracStart: 0.15, fracEnd: 0.85},
 		{name: "extract", tool: "valhalla_build_extract",
-			args: []string{"--config", cfgPath, "-v"},
+			// --overwrite: a retry run hits an existing .tar from the
+			// previous build; extract refuses without this flag.
+			args: []string{"--config", cfgPath, "--overwrite", "-v"},
 			fracStart: 0.85, fracEnd: 1.00},
 	}
 

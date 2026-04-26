@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/api/client";
 import {
+  useActivateRegion,
   useDeleteRegion,
   useInstallRegion,
   useSetRegionSchedule,
+  useSettings,
   useUpdateRegionNow,
 } from "@/lib/api/hooks";
 import type { Region, RegionCatalogEntry } from "@/lib/api/schemas";
@@ -14,6 +16,11 @@ import { CatalogTree } from "@/components/admin/regions/CatalogTree";
 import { DeleteDialog } from "@/components/admin/regions/DeleteDialog";
 import { InstallDialog } from "@/components/admin/regions/InstallDialog";
 import { InstalledTable } from "@/components/admin/regions/InstalledTable";
+import {
+  Toast,
+  ToastDescription,
+  ToastTitle,
+} from "@/components/ui/toast";
 import { useRegionsAdmin } from "@/lib/admin/regions/use-regions-admin";
 import { useRegionStream } from "@/lib/admin/regions/use-region-stream";
 
@@ -31,6 +38,28 @@ export default function AdminRegionsPage() {
   const deleteMutation = useDeleteRegion();
   const updateNow = useUpdateRegionNow();
   const setSchedule = useSetRegionSchedule();
+  const activate = useActivateRegion();
+  const settings = useSettings();
+
+  // The settings tree mirrors the SQLite settings table; routing.activeRegion
+  // is the canonical key whose Valhalla tiles drive routing requests.
+  const activeRegionName =
+    (settings.data?.routing as { activeRegion?: string } | undefined)
+      ?.activeRegion ?? null;
+
+  // Polling-aware UX: when the operator picks a new region, surface a toast
+  // for ~6 s (matches the chart's 5 s poll cadence + service restart) so
+  // they know routing is briefly unavailable.
+  const [activateToast, setActivateToast] = useState<{
+    name: string;
+    at: number;
+  } | null>(null);
+  const activateToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (activateToastTimer.current) clearTimeout(activateToastTimer.current);
+    };
+  }, []);
 
   const [installTarget, setInstallTarget] =
     useState<RegionCatalogEntry | null>(null);
@@ -41,14 +70,36 @@ export default function AdminRegionsPage() {
   // the installed list (where most admin actions land) leads the page.
   const [catalogOpen, setCatalogOpen] = useState(false);
 
-  const pendingByName: Record<string, "update" | "schedule" | "delete" | null> =
-    {};
+  const pendingByName: Record<
+    string,
+    "update" | "schedule" | "delete" | "activate" | null
+  > = {};
   if (updateNow.isPending && updateNow.variables)
     pendingByName[updateNow.variables.name] = "update";
   if (deleteMutation.isPending && deleteMutation.variables)
     pendingByName[deleteMutation.variables.name] = "delete";
   if (setSchedule.isPending && setSchedule.variables)
     pendingByName[setSchedule.variables.name] = "schedule";
+  if (activate.isPending && activate.variables)
+    pendingByName[activate.variables.name] = "activate";
+
+  const onActivateRegion = (region: Region) => {
+    if (region.name === activeRegionName) return;
+    activate.mutate(
+      { name: region.name },
+      {
+        onSuccess: () => {
+          setActivateToast({ name: region.displayName, at: Date.now() });
+          if (activateToastTimer.current)
+            clearTimeout(activateToastTimer.current);
+          activateToastTimer.current = setTimeout(
+            () => setActivateToast(null),
+            6000,
+          );
+        },
+      },
+    );
+  };
 
   const openInstall = (entry: RegionCatalogEntry) => {
     setInstallTarget(entry);
@@ -165,11 +216,13 @@ export default function AdminRegionsPage() {
           <InstalledTable
             regions={data.regions}
             pendingByName={pendingByName}
+            activeRegionName={activeRegionName}
             onUpdateNow={(r) => updateNow.mutate({ name: r.name })}
             onScheduleChange={(r, next) =>
               setSchedule.mutate({ name: r.name, schedule: next })
             }
             onDelete={openDelete}
+            onActivate={onActivateRegion}
           />
         </section>
       </div>
@@ -196,6 +249,25 @@ export default function AdminRegionsPage() {
             : null
         }
       />
+
+      {activateToast ? (
+        <Toast
+          key={activateToast.at}
+          open
+          onOpenChange={(open) => {
+            if (!open) setActivateToast(null);
+          }}
+          role="status"
+        >
+          <div className="flex flex-col gap-1">
+            <ToastTitle>Switching routing to {activateToast.name}</ToastTitle>
+            <ToastDescription>
+              Routing will be unavailable for a few seconds while Valhalla
+              reloads tiles.
+            </ToastDescription>
+          </div>
+        </Toast>
+      ) : null}
     </div>
   );
 }

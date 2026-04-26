@@ -38,10 +38,10 @@ const VALID_MODES: readonly RouteMode[] = [
 ];
 const VALID_TABS: readonly LeftRailTab[] = [
   "search",
-  "results",
   "directions",
-  "place",
   "saved",
+  "recents",
+  "categoryResults",
 ];
 
 function fmt(n: number): string {

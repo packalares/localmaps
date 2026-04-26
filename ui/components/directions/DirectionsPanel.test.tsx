@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useDirectionsStore } from "@/lib/state/directions";
+import { useMapStore } from "@/lib/state/map";
 
 // Stub out map-rendering and route-sync hooks: they touch MapLibre and
 // the real fetch layer respectively.
@@ -61,71 +62,78 @@ function renderWithQuery(ui: React.ReactElement) {
 describe("<DirectionsPanel />", () => {
   beforeEach(() => {
     useDirectionsStore.getState().reset();
+    try {
+      window.localStorage.removeItem("localmaps.search.history.v1");
+    } catch {
+      /* ignore */
+    }
   });
   afterEach(() => {
     useDirectionsStore.getState().reset();
   });
 
-  it("renders two waypoint rows by default", () => {
+  it("renders mode toggles, From and To inputs, and a close button", () => {
     renderWithQuery(<DirectionsPanel />);
-    const list = screen.getByRole("list", { name: /route waypoints/i });
-    const items = within(list).getAllByRole("listitem");
-    expect(items).toHaveLength(2);
-    expect(screen.getByRole("textbox", { name: /waypoint a/i })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: /waypoint b/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: /driving/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: /cycling/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: /walking/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /^from$/i })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /^to$/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /close directions/i }),
+    ).toBeInTheDocument();
   });
 
-  it("shows autocomplete results and selecting fills the waypoint label", async () => {
+  it("marks the active mode with aria-selected=true", () => {
+    useDirectionsStore.setState((s) => ({ ...s, mode: "bicycle" }));
+    renderWithQuery(<DirectionsPanel />);
+    expect(
+      screen.getByRole("tab", { name: /cycling/i }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(
+      screen.getByRole("tab", { name: /driving/i }),
+    ).toHaveAttribute("aria-selected", "false");
+  });
+
+  it("clicking a mode toggle updates the Zustand mode", async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<DirectionsPanel />);
+    await user.click(screen.getByRole("tab", { name: /walking/i }));
+    expect(useDirectionsStore.getState().mode).toBe("pedestrian");
+  });
+
+  it("unsupported modes (transit/flights) are disabled", () => {
+    renderWithQuery(<DirectionsPanel />);
+    const transit = screen.getByRole("tab", { name: /transit/i });
+    const flights = screen.getByRole("tab", { name: /flights/i });
+    expect(transit).toBeDisabled();
+    expect(flights).toBeDisabled();
+  });
+
+  it("autocomplete fills the destination waypoint", async () => {
     const user = userEvent.setup();
     renderWithQuery(<DirectionsPanel />);
 
-    const inputA = screen.getByRole("textbox", { name: /waypoint a/i });
-    await user.type(inputA, "buc");
+    const inputTo = screen.getByRole("textbox", { name: /^to$/i });
+    await user.type(inputTo, "buc");
 
     const option = await screen.findByRole("option", {
       name: /bucharest/i,
     });
     await user.click(option);
 
-    expect(
-      (inputA as HTMLInputElement).value,
-    ).toMatch(/bucharest/i);
-    const stored = useDirectionsStore.getState().waypoints[0];
-    expect(stored.lngLat).toEqual({ lng: 26.1, lat: 44.43 });
+    expect((inputTo as HTMLInputElement).value).toMatch(/bucharest/i);
+    const stored = useDirectionsStore.getState().waypoints.at(-1);
+    expect(stored?.lngLat).toEqual({ lng: 26.1, lat: 44.43 });
   });
 
-  it("adds a waypoint row when Add stop is clicked", async () => {
-    const user = userEvent.setup();
-    renderWithQuery(<DirectionsPanel />);
-    await user.click(screen.getByRole("button", { name: /add stop/i }));
-    const items = within(
-      screen.getByRole("list", { name: /route waypoints/i }),
-    ).getAllByRole("listitem");
-    expect(items.length).toBe(3);
-  });
-
-  it("keyboard reorder moves a waypoint down", async () => {
-    const user = userEvent.setup();
-    useDirectionsStore.setState((s) => ({
-      ...s,
-      waypoints: [
-        { id: "x", label: "Alpha", lngLat: { lng: 1, lat: 1 } },
-        { id: "y", label: "Mid", lngLat: { lng: 2, lat: 2 } },
-        { id: "z", label: "Omega", lngLat: { lng: 3, lat: 3 } },
-      ],
-    }));
-    renderWithQuery(<DirectionsPanel />);
-    const moveDownButtons = screen.getAllByRole("button", {
-      name: /move waypoint down/i,
-    });
-    await user.click(moveDownButtons[0]);
-    const labels = useDirectionsStore
-      .getState()
-      .waypoints.map((w) => w.label);
-    expect(labels).toEqual(["Mid", "Alpha", "Omega"]);
-  });
-
-  it("swap button flips start and end", async () => {
+  it("swap button flips From and To", async () => {
     const user = userEvent.setup();
     useDirectionsStore.setState((s) => ({
       ...s,
@@ -135,10 +143,73 @@ describe("<DirectionsPanel />", () => {
       ],
     }));
     renderWithQuery(<DirectionsPanel />);
-    await user.click(screen.getByRole("button", { name: /swap start and end/i }));
+    await user.click(
+      screen.getByRole("button", { name: /swap start and end/i }),
+    );
     const labels = useDirectionsStore
       .getState()
       .waypoints.map((w) => w.label);
     expect(labels).toEqual(["Omega", "Alpha"]);
+  });
+
+  it("close button returns to the search tab", async () => {
+    const user = userEvent.setup();
+    useMapStore.setState((s) => ({ ...s, leftRailTab: "directions" }));
+    renderWithQuery(<DirectionsPanel />);
+    await user.click(screen.getByRole("button", { name: /close directions/i }));
+    expect(useMapStore.getState().leftRailTab).toBe("search");
+  });
+
+  it("'Your location' button uses the geolocation API to fill From", async () => {
+    const user = userEvent.setup();
+    const getCurrentPosition = vi.fn(
+      (success: (pos: GeolocationPosition) => void) => {
+        success({
+          coords: {
+            latitude: 12.34,
+            longitude: 56.78,
+            accuracy: 10,
+            altitude: null,
+            altitudeAccuracy: null,
+            heading: null,
+            speed: null,
+          },
+          timestamp: Date.now(),
+        } as GeolocationPosition);
+      },
+    );
+    Object.defineProperty(window.navigator, "geolocation", {
+      configurable: true,
+      value: { getCurrentPosition },
+    });
+    renderWithQuery(<DirectionsPanel />);
+    await user.click(screen.getByRole("button", { name: /your location/i }));
+    const from = useDirectionsStore.getState().waypoints[0];
+    expect(from.lngLat).toEqual({ lng: 56.78, lat: 12.34 });
+  });
+
+  it("renders recent places from localStorage and fills the destination on click", async () => {
+    const user = userEvent.setup();
+    const entry = {
+      id: "r-history-1",
+      label: "Prajitureselle",
+      center: { lat: 44.5, lon: 26.1 },
+      confidence: 0.9,
+      address: { street: "Strada X 35", city: "Voluntari" },
+    };
+    window.localStorage.setItem(
+      "localmaps.search.history.v1",
+      JSON.stringify([entry]),
+    );
+
+    renderWithQuery(<DirectionsPanel />);
+    const row = await screen.findByRole("button", {
+      name: /prajitureselle/i,
+    });
+    await user.click(row);
+
+    const stored = useDirectionsStore.getState().waypoints.at(-1);
+    expect(stored?.label).toMatch(/prajitureselle/i);
+    expect(stored?.lngLat).toEqual({ lng: 26.1, lat: 44.5 });
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { RefreshCw, Trash2 } from "lucide-react";
+import { Navigation, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Region } from "@/lib/api/schemas";
 import { formatBytes } from "@/lib/admin/regions/format-bytes";
@@ -21,7 +21,11 @@ export interface InstalledCardProps {
   onUpdateNow: (region: Region) => void;
   onScheduleChange: (region: Region, next: string) => void;
   onDelete: (region: Region) => void;
-  pendingAction: "update" | "schedule" | "delete" | null;
+  /** Optional: when provided, render a "Use for routing" action. */
+  onActivate?: (region: Region) => void;
+  /** True when this region is the active routing target. */
+  isActiveRouting?: boolean;
+  pendingAction: "update" | "schedule" | "delete" | "activate" | null;
 }
 
 function formatMaybeDate(iso: string | null | undefined): string {
@@ -41,18 +45,35 @@ export function InstalledCard({
   onUpdateNow,
   onScheduleChange,
   onDelete,
+  onActivate,
+  isActiveRouting,
   pendingAction,
 }: InstalledCardProps) {
   const display = formatRegionState(region.state);
+  const canActivate = onActivate && display.isReady && !isActiveRouting;
 
   return (
     <article
       aria-label={region.displayName}
-      className="flex flex-col gap-2 border-b border-border px-3 py-3 last:border-0"
+      data-active-routing={isActiveRouting ? "true" : undefined}
+      className={cn(
+        "flex flex-col gap-2 border-b border-border px-3 py-3 last:border-0",
+        isActiveRouting ? "bg-primary/5" : undefined,
+      )}
     >
       <header className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">{region.displayName}</div>
+          <div className="flex items-center gap-2 truncate font-medium">
+            <span className="truncate">{region.displayName}</span>
+            {isActiveRouting ? (
+              <span
+                aria-label="Active routing region"
+                className="inline-flex shrink-0 items-center rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+              >
+                Active
+              </span>
+            ) : null}
+          </div>
           <div className="truncate font-mono text-xs text-muted-foreground">
             {region.name}
           </div>
@@ -90,6 +111,18 @@ export function InstalledCard({
           disabled={pendingAction === "schedule"}
         />
         <div className="flex items-center gap-1">
+          {canActivate ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => onActivate?.(region)}
+              disabled={pendingAction === "activate"}
+              aria-label={`Use ${region.displayName} for routing`}
+            >
+              <Navigation className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+              Use for routing
+            </Button>
+          ) : null}
           {display.isReady || display.isFailed ? (
             <Button
               size="sm"

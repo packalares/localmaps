@@ -60,6 +60,23 @@ func registerAgentEHandlers(mux *asynq.ServeMux, b Boot, log zerolog.Logger) *sc
 	mux.HandleFunc(jobs.KindRegionInstall, install.NewHandler(installDeps, log))
 	mux.HandleFunc(jobs.KindRegionUpdate, install.NewUpdateHandler(installDeps, log))
 
+	// region:delete — wipe disk + purge pelias docs tagged with the
+	// region. The settings reader here is the same SQLite shim built
+	// below for the pipeline chain; it may be nil in degraded test
+	// configurations, in which case the handler falls back to the
+	// schema defaults (purge=true, ES URL = http://pelias-es:9200).
+	var deleteSettings install.PeliasURLReader
+	if db != nil {
+		xdb := sqlx.NewDb(db, "sqlite")
+		s := &sqlxSettings{db: xdb}
+		deleteSettings = install.AdaptSettings(s.GetString, s.GetBool)
+	}
+	mux.HandleFunc(jobs.KindRegionDelete,
+		install.NewDeleteHandler(install.DeleteDeps{
+			Deps:     installDeps,
+			Settings: deleteSettings,
+		}, log))
+
 	// Shared collaborators for the pipeline chain. Settings is the live
 	// SQLite-backed reader every StageWork uses to construct its runner
 	// at job time (R3 — no hardcoded config); it may be nil in degraded
@@ -89,7 +106,6 @@ func registerAgentEHandlers(mux *asynq.ServeMux, b Boot, log zerolog.Logger) *sc
 
 	// Still-pending kinds. Keep wired so Asynq surfaces them.
 	for _, kind := range []string{
-		jobs.KindRegionDelete,
 		jobs.KindPipelinePOI,
 	} {
 		k := kind

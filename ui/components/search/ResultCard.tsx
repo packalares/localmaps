@@ -49,21 +49,25 @@ export const ResultCard = forwardRef<HTMLButtonElement, ResultCardProps>(
         onClick={() => onSelect(result)}
         onPointerEnter={onPointerOver ? () => onPointerOver(result) : undefined}
         className={cn(
-          "group flex w-full items-start gap-3 rounded-md px-3 py-2.5 text-left transition-colors",
+          // Layout: [icon] [primary + secondary] [distance]. Single line
+          // 56-64px tall via py-3.
+          "group flex w-full items-center gap-3 rounded-md px-3 py-3 text-left transition-colors",
           "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          highlighted ? "bg-accent text-accent-foreground" : "hover:bg-muted",
+          // Subtle hover/highlight only — no big filled blue card.
+          // Highlighted state uses a faint primary tint + an inset ring
+          // so keyboard focus is still visible without flooding the row.
+          highlighted
+            ? "bg-primary/5 ring-1 ring-inset ring-primary/30"
+            : "hover:bg-muted",
         )}
       >
         <span
           className={cn(
-            "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
-            highlighted
-              ? "bg-accent-foreground/10 text-accent-foreground"
-              : "bg-muted text-muted-foreground",
+            "inline-flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground",
           )}
           aria-hidden="true"
         >
-          <Icon className="h-4 w-4" />
+          <Icon className="h-5 w-5" />
         </span>
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-sm font-medium text-foreground">
@@ -75,14 +79,8 @@ export const ResultCard = forwardRef<HTMLButtonElement, ResultCardProps>(
             </span>
           ) : null}
         </span>
-        {distanceLabel ? (
-          <span
-            className="mt-0.5 shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
-            aria-label={`Distance: ${distanceLabel}`}
-          >
-            {distanceLabel}
-          </span>
-        ) : null}
+        {/* Distance label intentionally hidden — it noise-trips on every
+            map pan/zoom and the user explicitly asked to drop it. */}
       </button>
     );
   },
