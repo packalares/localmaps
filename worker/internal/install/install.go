@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -102,12 +103,21 @@ func (d Deps) run(ctx context.Context, p jobs.RegionInstallPayload, l zerolog.Lo
 		return fmt.Errorf("mkdir: %w", err)
 	}
 	dest := filepath.Join(destDir, "source.osm.pbf")
-	sum, size, err := Download(ctx, d.HTTP, entry.SourceURL, dest)
-	if err != nil {
-		return fmt.Errorf("download: %w", err)
+	var sum string
+	var size int64
+	if reused, ok := tryReuseExistingPBF(ctx, d.HTTP, entry.SourceURL, dest, l); ok {
+		sum = reused.MD5
+		size = reused.Size
+		l.Info().Str("md5", sum).Int64("bytes", size).
+			Str("path", dest).Msg("pbf reused (already on disk, md5 matches upstream)")
+	} else {
+		sum, size, err = Download(ctx, d.HTTP, entry.SourceURL, dest)
+		if err != nil {
+			return fmt.Errorf("download: %w", err)
+		}
+		l.Info().Str("md5", sum).Int64("bytes", size).
+			Str("path", dest).Msg("pbf downloaded")
 	}
-	l.Info().Str("md5", sum).Int64("bytes", size).
-		Str("path", dest).Msg("pbf downloaded")
 	if err := persistSourceMeta(ctx, d.DB, p.Region, sum, size); err != nil {
 		return fmt.Errorf("persist source meta: %w", err)
 	}
@@ -127,6 +137,126 @@ func (d Deps) run(ctx context.Context, p jobs.RegionInstallPayload, l zerolog.Lo
 	}
 	l.Info().Msg("enqueued pipeline:tiles; subsequent stages will chain")
 	return nil
+}
+
+// ReusedPBF describes a PBF already on disk that's been verified
+// against the upstream MD5 sidecar. Surfaced so the installer can log
+// the reuse and persist the same source-meta the download path would.
+type ReusedPBF struct {
+	MD5  string
+	Size int64
+}
+
+// tryReuseExistingPBF returns (info, true) when destPath already holds
+// a complete pbf whose MD5 matches the upstream `<url>.md5` sidecar.
+// Used to skip a 30 GB re-download when an operator has manually
+// dropped the file in place (e.g. after a geofabrik rate-limit).
+//
+// Failure modes — we return (_, false) on any of:
+//   - destPath missing / not a regular file / zero-byte / unreadable
+//   - upstream `<url>.md5` not reachable or returns non-200
+//   - sidecar parse fails
+//   - hashes don't match
+//
+// In every false case the caller falls through to the existing
+// Download path — the goal is "use the file when we KNOW it's correct,
+// otherwise download as usual". A corrupt or partial file is never
+// silently reused.
+//
+// A leftover `<destPath>.tmp` from a prior aborted run is removed so
+// the subsequent Download() call doesn't collide.
+func tryReuseExistingPBF(
+	ctx context.Context,
+	client *http.Client,
+	srcURL, destPath string,
+	l zerolog.Logger,
+) (ReusedPBF, bool) {
+	// Clean up any prior aborted-download tmp file regardless of which
+	// branch we end up taking — it's never the source of truth.
+	_ = os.Remove(destPath + ".tmp")
+
+	st, err := os.Stat(destPath)
+	if err != nil || !st.Mode().IsRegular() || st.Size() == 0 {
+		return ReusedPBF{}, false
+	}
+
+	upstreamMD5, err := fetchUpstreamMD5(ctx, client, srcURL)
+	if err != nil {
+		l.Warn().Err(err).Str("path", destPath).
+			Msg("pbf reuse: cannot verify against upstream md5; falling through to download")
+		return ReusedPBF{}, false
+	}
+
+	localMD5, err := md5File(destPath)
+	if err != nil {
+		l.Warn().Err(err).Str("path", destPath).
+			Msg("pbf reuse: failed to hash local file; falling through to download")
+		return ReusedPBF{}, false
+	}
+
+	if !strings.EqualFold(localMD5, upstreamMD5) {
+		l.Warn().Str("path", destPath).
+			Str("localMD5", localMD5).Str("upstreamMD5", upstreamMD5).
+			Msg("pbf reuse: local md5 mismatch (file is incomplete or stale); will re-download")
+		// The file is wrong — remove it so Download() doesn't see it as a
+		// zombie left over from this session.
+		_ = os.Remove(destPath)
+		return ReusedPBF{}, false
+	}
+
+	return ReusedPBF{MD5: localMD5, Size: st.Size()}, true
+}
+
+// fetchUpstreamMD5 downloads `<srcURL>.md5` and returns the hex digest.
+// Geofabrik's sidecar format is `<md5>  <filename>\n` — we split on
+// whitespace and take the first token. Capped to 1 KiB and a 30s
+// timeout so a misconfigured server can't stall the import.
+func fetchUpstreamMD5(ctx context.Context, client *http.Client, srcURL string) (string, error) {
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, srcURL+".md5", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("md5 sidecar http %d from %s", resp.StatusCode, req.URL)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(string(body))
+	if len(fields) == 0 {
+		return "", errors.New("md5 sidecar empty")
+	}
+	digest := fields[0]
+	if len(digest) != 32 {
+		return "", fmt.Errorf("md5 sidecar token %q is not a 32-char hex", digest)
+	}
+	return digest, nil
+}
+
+// md5File computes the hex md5 of an on-disk file. Streamed so we
+// don't allocate a 30 GB buffer.
+func md5File(path string) (string, error) {
+	f, err := os.Open(path) // #nosec G304 — path is built from our own DataDir.
+	if err != nil {
+		return "", err
+	}
+	defer f.Close() //nolint:errcheck
+	h := md5.New() // #nosec G401 — must match geofabrik's published digest.
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Download streams url to destPath via dest.tmp + rename. Returns the

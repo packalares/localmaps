@@ -2,8 +2,10 @@ package install
 
 import (
 	"context"
+	"crypto/md5" // #nosec G501 — md5 is what geofabrik publishes.
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -112,7 +114,9 @@ func openTestDB(t *testing.T) *sql.DB {
 }
 
 // servePbf returns an httptest server that delivers the given bytes at
-// /europe/monaco-latest.osm.pbf.
+// /europe/monaco-latest.osm.pbf and the geofabrik-style md5 sidecar at
+// the same path + ".md5". The sidecar is served regardless of whether
+// the test exercises it — the extra route is harmless to existing tests.
 func servePbf(t *testing.T, body []byte) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -120,6 +124,11 @@ func servePbf(t *testing.T, body []byte) *httptest.Server {
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Length", itoa(len(body)))
 			_, _ = w.Write(body)
+		})
+	mux.HandleFunc("/europe/monaco-latest.osm.pbf.md5",
+		func(w http.ResponseWriter, r *http.Request) {
+			sum := md5.Sum(body)
+			fmt.Fprintf(w, "%x  monaco-latest.osm.pbf\n", sum)
 		})
 	return httptest.NewServer(mux)
 }
@@ -280,3 +289,72 @@ func findFixture(t *testing.T) string {
 
 // Unused but keeps the package deps honest.
 var _ = io.Copy
+
+// --- tryReuseExistingPBF -------------------------------------------------
+//
+// Cover the three documented branches:
+//   1. file present + md5 matches upstream → reuse.
+//   2. file present + md5 mismatch (corrupt / partial) → fall through and
+//      delete the bad file so Download can take over without seeing a
+//      zombie.
+//   3. file absent → fall through quietly (no md5 fetch happens).
+
+func TestTryReuseExistingPBF_ReusesWhenMD5Matches(t *testing.T) {
+	fixture, err := os.ReadFile(findFixture(t))
+	require.NoError(t, err)
+
+	srv := servePbf(t, fixture)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "source.osm.pbf")
+	require.NoError(t, os.WriteFile(dest, fixture, 0o644))
+
+	got, ok := tryReuseExistingPBF(context.Background(), http.DefaultClient,
+		srv.URL+"/europe/monaco-latest.osm.pbf", dest, zerolog.Nop())
+	require.True(t, ok, "expected reuse path")
+	require.EqualValues(t, len(fixture), got.Size)
+	require.Len(t, got.MD5, 32)
+	// Local file must remain in place.
+	st, err := os.Stat(dest)
+	require.NoError(t, err)
+	require.EqualValues(t, len(fixture), st.Size())
+}
+
+func TestTryReuseExistingPBF_DeletesAndFallsThroughOnMismatch(t *testing.T) {
+	fixture, err := os.ReadFile(findFixture(t))
+	require.NoError(t, err)
+
+	srv := servePbf(t, fixture)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "source.osm.pbf")
+	// Simulate a partial / corrupt file: same length, wrong content.
+	corrupt := make([]byte, len(fixture))
+	for i := range corrupt {
+		corrupt[i] = 'X'
+	}
+	require.NoError(t, os.WriteFile(dest, corrupt, 0o644))
+
+	_, ok := tryReuseExistingPBF(context.Background(), http.DefaultClient,
+		srv.URL+"/europe/monaco-latest.osm.pbf", dest, zerolog.Nop())
+	require.False(t, ok, "mismatch must NOT reuse")
+	// Bad file must be removed so Download() doesn't see a zombie.
+	_, statErr := os.Stat(dest)
+	require.True(t, os.IsNotExist(statErr), "corrupt file should be deleted, got %v", statErr)
+}
+
+func TestTryReuseExistingPBF_FallsThroughWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "source.osm.pbf")
+	// Pre-create a stale .tmp to confirm the helper cleans it up.
+	require.NoError(t, os.WriteFile(dest+".tmp", []byte("partial"), 0o644))
+
+	_, ok := tryReuseExistingPBF(context.Background(), http.DefaultClient,
+		"http://invalid.invalid/europe-latest.osm.pbf", dest, zerolog.Nop())
+	require.False(t, ok)
+	// .tmp must have been swept regardless of which branch ran.
+	_, statErr := os.Stat(dest + ".tmp")
+	require.True(t, os.IsNotExist(statErr), ".tmp should be cleaned, got %v", statErr)
+}
