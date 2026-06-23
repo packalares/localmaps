@@ -61,7 +61,7 @@ describe("<RegionSwitcher />", () => {
     render(wrap(<RegionSwitcher />));
 
     const trigger = screen.getByRole("button", {
-      name: /choose active region/i,
+      name: /pick the home region/i,
     });
     await user.click(trigger);
 
@@ -88,11 +88,11 @@ describe("<RegionSwitcher />", () => {
     const user = userEvent.setup();
     render(wrap(<RegionSwitcher />));
     await user.click(
-      screen.getByRole("button", { name: /choose active region/i }),
+      screen.getByRole("button", { name: /pick the home region/i }),
     );
     await user.click(
       await screen.findByRole("menuitem", {
-        name: /show all installed regions/i,
+        name: /clear home region selection/i,
       }),
     );
     expect(useMapStore.getState().activeRegion).toBeNull();
