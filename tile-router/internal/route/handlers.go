@@ -28,12 +28,35 @@ type Snapshotter interface {
 	Snapshot() ([]pick.Region, map[string]*store.Loaded)
 }
 
+// basemapMaxZoom mirrors basemap.MaxZoom. Duplicated as a const here
+// instead of imported to keep the route → basemap import direction
+// one-way (the basemap package depends on pick; pick stays leaf;
+// route depends on both via small adapters). If basemap.MaxZoom ever
+// changes, bump both.
+const basemapMaxZoom uint8 = 5
+
 // Handlers serve tiles + tilejson. Construct one and attach to a
 // net/http mux.
+//
+// `Basemap` is optional. When non-nil, low-zoom requests (z <=
+// basemap.MaxZoom) that don't resolve to an installed pmtiles region
+// fall through to a synthesised world-overview tile rendered from
+// the embedded Natural Earth polygons — fixes the "half of Romania
+// is missing at z=4" problem where one tile spans several countries
+// and per-region picking can only cover part of it.
 type Handlers struct {
 	Store       Snapshotter
-	Attribution string  // shown in the map UI's bottom-right; e.g. "© OpenStreetMap contributors"
+	Basemap     BasemapRenderer
+	Attribution string // shown in the map UI's bottom-right; e.g. "© OpenStreetMap contributors"
 	Log         zerolog.Logger
+}
+
+// BasemapRenderer is the contract Handlers needs from the basemap
+// package. Inverting the dependency keeps the route layer testable
+// with a fake renderer (and keeps the import graph one-way).
+type BasemapRenderer interface {
+	Render(z uint8, x, y uint32) ([]byte, error)
+	IsEmpty() bool
 }
 
 // Register attaches the handler set to the given ServeMux. Routes:
@@ -92,17 +115,71 @@ func (h *Handlers) serveTile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}
 
+	// serveBasemap renders the embedded world-overview MVT and
+	// writes it to the response. Used as a fallback at low zoom
+	// for any (z, x, y) where the per-region picker either fails
+	// to match a region OR matches a region whose pmtiles is
+	// empty for that tile.
+	serveBasemap := func() bool {
+		if h.Basemap == nil || h.Basemap.IsEmpty() {
+			return false
+		}
+		if z > uint64(basemapMaxZoom) {
+			return false
+		}
+		body, err := h.Basemap.Render(uint8(z), uint32(x), uint32(y))
+		if err != nil {
+			h.Log.Warn().Err(err).Int("z", int(z)).Int("x", int(x)).Int("y", int(y)).
+				Msg("basemap render error")
+			return false
+		}
+		if len(body) == 0 {
+			return false
+		}
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.Header().Set("Content-Encoding", "gzip") // basemap MarshalGzipped output
+		// Basemap content is static for the life of the binary —
+		// safe to cache aggressively. Browsers can hold a day
+		// without missing updates because the rendered geometry
+		// is baked at build time.
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Header().Set("X-Region", "basemap")
+		if _, err := w.Write(body); err != nil {
+			h.Log.Debug().Err(err).Msg("write basemap: client disconnected")
+		}
+		return true
+	}
+
+	// At low zoom (z <= basemapMaxZoom) one tile spans multiple
+	// countries and per-region pmtiles only cover ONE country's
+	// territory inside the tile. Serving the basemap directly here
+	// — bypassing the per-region picker entirely — gives the user
+	// a consistent world overview at world / continent zoom. The
+	// country-scale pmtiles take back over at z = basemapMaxZoom +
+	// 1, where each tile fits cleanly inside one country.
+	if z <= uint64(basemapMaxZoom) && serveBasemap() {
+		return
+	}
+
 	regions, loaded := h.Store.Snapshot()
 	if len(regions) == 0 {
-		// No installed regions at all. The map UI will show a blank
-		// canvas; the operator should install a region.
+		// No installed regions at all. (Basemap was tried above for
+		// low zoom; here at high zoom we have nothing to serve.)
+		if serveBasemap() {
+			return
+		}
 		notFound()
 		return
 	}
 	picked, ok := pick.Pick(regions, int(z), int(x), int(y))
 	if !ok {
-		// Tile is over ocean or outside any installed region. Standard
-		// slippy-map behaviour: 404; the client just doesn't render.
+		// Tile is over ocean or outside any installed region — try
+		// the basemap fallback first so the world overview keeps
+		// showing continent outlines even when the user pans away
+		// from installed countries at low zoom.
+		if serveBasemap() {
+			return
+		}
 		notFound()
 		return
 	}
@@ -124,10 +201,14 @@ func (h *Handlers) serveTile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(tile) == 0 {
-		// In-region but no data for this tile (sparse). 204 vs 404
-		// is a holy war; we pick 404 because the protomaps client
-		// library treats both as "empty" and 404 keeps Cloudflare /
-		// nginx access logs simpler.
+		// In-region but the picked pmtiles has no data for this
+		// tile. At low zoom this is the "country pmtiles only
+		// covers ITS own territory but the tile spans multiple
+		// countries" case — fall back to the basemap so the user
+		// sees neighbouring countries' outlines instead of a hole.
+		if serveBasemap() {
+			return
+		}
 		notFound()
 		return
 	}

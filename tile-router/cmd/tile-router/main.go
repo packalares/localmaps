@@ -33,6 +33,7 @@ import (
 	"github.com/rs/zerolog"
 	_ "modernc.org/sqlite"
 
+	"github.com/packalares/localmaps/tile-router/internal/basemap"
 	"github.com/packalares/localmaps/tile-router/internal/pick"
 	"github.com/packalares/localmaps/tile-router/internal/route"
 	"github.com/packalares/localmaps/tile-router/internal/store"
@@ -115,9 +116,21 @@ func run() error {
 	}
 	go s.Run(ctx)
 
+	// Build the world-overview basemap renderer from the same Atlas.
+	// Cheap: just reorganises polygon data into orb.MultiPolygon
+	// without re-parsing the GeoJSON. Memory cost is one extra copy
+	// of each country's coordinates (~6 MB).
+	bm := basemap.NewRenderer(atlas)
+	if bm.IsEmpty() {
+		log.Warn().Msg("basemap renderer is empty; low-zoom tiles will 404 outside installed regions")
+	} else {
+		log.Info().Msg("basemap renderer ready (low-zoom fallback enabled)")
+	}
+
 	mux := http.NewServeMux()
 	(&route.Handlers{
 		Store:       s,
+		Basemap:     bm,
 		Attribution: b.Attribution,
 		Log:         log,
 	}).Register(mux)
