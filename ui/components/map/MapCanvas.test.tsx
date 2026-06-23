@@ -30,6 +30,13 @@ vi.mock("maplibre-gl", () => {
     getStyle: () => ({ sprite: "spr", sources: {}, layers: [] }),
     setStyle: vi.fn(),
     addProtocol: vi.fn(),
+    // Image atlas methods used by registerPoiIcons. The real
+    // implementations mutate WebGL state; here they're no-ops, and
+    // hasImage tracks names via a Set so the placeholder/swap path
+    // in poi-icons.ts can be exercised end-to-end if a test wants.
+    hasImage: vi.fn((_name: string) => false),
+    addImage: vi.fn(),
+    updateImage: vi.fn(),
   };
   const MapCtor = vi.fn(() => instance);
   return {
