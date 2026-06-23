@@ -92,10 +92,36 @@ type step struct {
 // stderr from the failed child. ctx cancellation terminates the
 // current child and aborts the chain.
 func (r *ValhallaRunner) Run(ctx context.Context, region string, paths RegionPaths, reporter ProgressReporter) error {
+	// Single-PBF shortcut keeps the existing API + tests intact; the
+	// runner internally treats it the same as RunMulti with one PBF.
+	return r.RunMulti(ctx, region, paths, []string{paths.PbfPath}, reporter)
+}
+
+// RunMulti is the multi-PBF variant used by the combined-routing
+// pipeline. Behaves exactly like Run for a single PBF, and accepts
+// any number of inputs for cross-country routing builds. The Valhalla
+// CLI accepts multiple PBFs on the command line natively — admin
+// /timezone/tile build steps just take them as positional args after
+// `--config` and graph-merge them into one routing graph internally.
+//
+// paths.PbfPath is ignored when len(pbfs) > 0; it stays in the
+// signature so the runtime config / TileDir / TarPath fields can
+// still drive output paths.
+func (r *ValhallaRunner) RunMulti(ctx context.Context, region string, paths RegionPaths, pbfs []string, reporter ProgressReporter) error {
 	if reporter == nil {
 		reporter = DiscardProgress{}
 	}
-	if err := validateValhallaPaths(paths); err != nil {
+	if len(pbfs) == 0 {
+		return fmt.Errorf("valhalla: at least one PBF required")
+	}
+	// Re-use the single-PBF validator for everything except PbfPath
+	// — multi-PBF callers pass the explicit list and shouldn't be
+	// forced to point paths.PbfPath at one of them.
+	checkPaths := paths
+	if checkPaths.PbfPath == "" {
+		checkPaths.PbfPath = pbfs[0]
+	}
+	if err := validateValhallaPaths(checkPaths); err != nil {
 		return err
 	}
 	cfgBytes, err := GenerateConfig(region, paths, r.cfg)
@@ -108,16 +134,21 @@ func (r *ValhallaRunner) Run(ctx context.Context, region string, paths RegionPat
 	}
 	defer cleanup()
 
+	// Build the positional PBF arg list once — the admins and tiles
+	// steps both want them tacked on after `--config <path>`.
+	adminArgs := append([]string{"--config", cfgPath}, pbfs...)
+	tilesArgs := append([]string{"--config", cfgPath}, pbfs...)
+
 	// Slices: admins 10 %, timezones 5 %, tiles 70 %, extract 15 %.
 	steps := []step{
 		{name: "admins", tool: "valhalla_build_admins",
-			args: []string{"--config", cfgPath, paths.PbfPath},
+			args: adminArgs,
 			fracStart: 0.00, fracEnd: 0.10},
 		{name: "timezones", tool: "valhalla_build_timezones",
 			args: []string{"--config", cfgPath},
 			fracStart: 0.10, fracEnd: 0.15},
 		{name: "tiles", tool: "valhalla_build_tiles",
-			args: []string{"--config", cfgPath, paths.PbfPath},
+			args: tilesArgs,
 			fracStart: 0.15, fracEnd: 0.85},
 		{name: "extract", tool: "valhalla_build_extract",
 			// --overwrite: a retry run hits an existing .tar from the

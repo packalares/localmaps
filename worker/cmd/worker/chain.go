@@ -213,6 +213,26 @@ func swapHandler(deps ChainDeps, work SwapWork, log zerolog.Logger) func(context
 			return fmt.Errorf("swap: finalise: %w", err)
 		}
 		l.Info().Msg("region ready")
+
+		// Trigger a fresh combined-routing build so cross-country
+		// directions pick up the newly-installed region. Fire-and-
+		// forget — failures to enqueue are logged but don't block
+		// the single-region pipeline that just succeeded. The
+		// combined handler is itself idempotent + no-ops when <2
+		// regions are ready.
+		if deps.Queue != nil {
+			task := asynq.NewTask(JobKindBuildCombinedRouting, nil)
+			if _, err := deps.Queue.EnqueueContext(ctx, task,
+				asynq.Queue("default"),
+				asynq.MaxRetry(2),
+				asynq.Timeout(6*time.Hour),
+			); err != nil {
+				l.Warn().Err(err).
+					Msg("enqueue combined-routing job failed; cross-country routing won't auto-rebuild")
+			} else {
+				l.Info().Msg("combined-routing enqueued (cross-country graph will rebuild)")
+			}
+		}
 		return nil
 	}
 }
