@@ -200,7 +200,16 @@ func swapHandler(deps ChainDeps, work SwapWork, log zerolog.Logger) func(context
 			markStageFailed(ctx, deps.DB, p.Region, p.JobID, err.Error())
 			return err
 		}
-		if err := finishSwap(ctx, deps.DB, p.Region, p.JobID); err != nil {
+		regionDir := fmt.Sprintf("%s/regions/%s", deps.DataDir, p.Region)
+		diskBytes, sizeErr := sumRegionDirBytes(regionDir)
+		if sizeErr != nil {
+			// Non-fatal: log + carry on. We'd rather mark the region
+			// ready with a null disk_bytes than fail the whole build
+			// because of a transient stat error.
+			l.Warn().Err(sizeErr).Str("dir", regionDir).
+				Msg("disk_bytes calc failed, marking ready with NULL size")
+		}
+		if err := finishSwap(ctx, deps.DB, p.Region, p.JobID, diskBytes); err != nil {
 			return fmt.Errorf("swap: finalise: %w", err)
 		}
 		l.Info().Msg("region ready")
@@ -210,7 +219,12 @@ func swapHandler(deps ChainDeps, work SwapWork, log zerolog.Logger) func(context
 
 // finishSwap writes the terminal success state: region.state=ready,
 // region.installed_at + last_updated_at = now, jobs.state=succeeded.
-func finishSwap(ctx context.Context, db *sql.DB, region, jobID string) error {
+//
+// `diskBytes` is the total size of the region directory on disk (sum
+// of map.pmtiles + source.osm.pbf + valhalla_tiles.tar + sidecars).
+// Pass 0 if the size couldn't be computed — the column stays NULL and
+// the UI shows "—" rather than a misleading zero.
+func finishSwap(ctx context.Context, db *sql.DB, region, jobID string, diskBytes int64) error {
 	if db == nil {
 		return nil
 	}
@@ -219,14 +233,19 @@ func finishSwap(ctx context.Context, db *sql.DB, region, jobID string) error {
 	if err != nil {
 		return err
 	}
+	// `disk_bytes` is the only nullable success-side column we write
+	// here. CASE-WHEN keeps a previous non-zero value when the new
+	// calculation came back zero (e.g. stat error) so the UI never
+	// flips from a real number back to "—" on a benign refresh.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE regions SET state = 'ready',
 		 installed_at = COALESCE(installed_at, ?),
 		 last_updated_at = ?,
 		 last_error = NULL,
 		 active_job_id = NULL,
-		 state_detail = 'ready'
-		 WHERE name = ?`, now, now, region); err != nil {
+		 state_detail = 'ready',
+		 disk_bytes = CASE WHEN ? > 0 THEN ? ELSE disk_bytes END
+		 WHERE name = ?`, now, now, diskBytes, diskBytes, region); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
