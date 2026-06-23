@@ -24,6 +24,7 @@ import (
 	"github.com/paulmach/orb/encoding/mvt"
 	"github.com/paulmach/orb/geojson"
 	"github.com/paulmach/orb/maptile"
+	"github.com/paulmach/orb/planar"
 	"github.com/paulmach/orb/project"
 
 	"github.com/packalares/localmaps/tile-router/internal/pick"
@@ -33,16 +34,30 @@ import (
 // above this falls through to the per-region pmtiles picker.
 const MaxZoom uint8 = 5
 
+// country holds everything one Natural Earth feature needs to render
+// at low zoom: the polygon set for the border line + a pre-computed
+// label anchor point in lat/lon.
+type country struct {
+	name    string // "Romania", "United States", …
+	iso     string // 3-letter ISO code; falls back to ADMIN when empty
+	polygon orb.MultiPolygon
+	// labelAt is the centroid of the LARGEST sub-polygon, computed
+	// once at load. Using the largest-polygon centroid (vs the
+	// MultiPolygon's combined centroid) avoids placing the "United
+	// States" label in the Pacific between Alaska and the mainland.
+	labelAt orb.Point
+}
+
 // Renderer holds the parsed country polygons in a form ready for
 // per-tile clipping. Construct once at boot from a pick.Atlas; the
 // Renderer reuses the polygon data but reorganises it as orb
 // geometries the MVT encoder understands.
 type Renderer struct {
-	// countries maps Natural Earth's 3-letter ISO code to the
-	// orb.MultiPolygon assembled at load time. Lookup goes by ISO
-	// rather than name because the picker also keys by ISO and we
-	// want consistent identification across both code paths.
-	countries map[string]orb.MultiPolygon
+	// countries maps Natural Earth's 3-letter ISO code (or ADMIN
+	// fallback) to the parsed country record. Lookup keys by the
+	// same identifier the picker uses so logs / debug headers
+	// cross-reference cleanly.
+	countries map[string]country
 }
 
 // NewRenderer converts a pick.Atlas to a basemap.Renderer. Each
@@ -55,7 +70,7 @@ type Renderer struct {
 // turns into a valid but empty tile). The caller can use IsEmpty()
 // to decide whether to bother calling Render at all.
 func NewRenderer(atlas *pick.Atlas) *Renderer {
-	r := &Renderer{countries: map[string]orb.MultiPolygon{}}
+	r := &Renderer{countries: map[string]country{}}
 	if atlas == nil {
 		return r
 	}
@@ -74,6 +89,8 @@ func NewRenderer(atlas *pick.Atlas) *Renderer {
 		// (e.g. Italy/Vatican, South Africa/Lesotho) are too small to
 		// resolve at world-scale anyway.
 		mp := make(orb.MultiPolygon, 0, len(c.Polygons))
+		var largest orb.Polygon
+		var largestArea float64
 		for _, ring := range c.Polygons {
 			if len(ring) < 3 {
 				continue
@@ -82,10 +99,38 @@ func NewRenderer(atlas *pick.Atlas) *Renderer {
 			for i, p := range ring {
 				pts[i] = orb.Point{p[0], p[1]}
 			}
-			mp = append(mp, orb.Polygon{pts})
+			poly := orb.Polygon{pts}
+			mp = append(mp, poly)
+			// Track the largest sub-polygon for label placement —
+			// for archipelagos this lands the country name on the
+			// mainland instead of in open water between islands.
+			a := planar.Area(poly)
+			if a > largestArea {
+				largestArea = a
+				largest = poly
+			}
 		}
-		if len(mp) > 0 {
-			r.countries[key] = mp
+		if len(mp) == 0 {
+			continue
+		}
+		// Centroid of the largest sub-polygon. Falls back to the
+		// MultiPolygon centroid for the (impossible-in-practice)
+		// case where every sub-polygon had zero area.
+		var label orb.Point
+		if len(largest) > 0 {
+			label, _ = planar.CentroidArea(largest)
+		} else {
+			label, _ = planar.CentroidArea(mp)
+		}
+		name := c.Name
+		if name == "" {
+			name = c.Admin
+		}
+		r.countries[key] = country{
+			name:    name,
+			iso:     key,
+			polygon: mp,
+			labelAt: label,
 		}
 	}
 	return r
@@ -131,23 +176,52 @@ func (r *Renderer) Render(z uint8, x, y uint32) ([]byte, error) {
 	// own tile. Cloning here is O(coords-per-country) but happens
 	// only for the country bboxes that intersect this tile, so
 	// most countries are skipped by the prefilter.
-	fc := geojson.NewFeatureCollection()
-	for iso, mp := range r.countries {
-		if !intersects(mp.Bound(), bound) {
+	//
+	// We emit TWO layers:
+	//   - `countries` — polygon outlines, drives basemap borders +
+	//     optional fill in the style.
+	//   - `country_labels` — point features at the pre-computed
+	//     label anchors, drives basemap text labels in the style.
+	// Polygon centroids could in theory be derived client-side by
+	// MapLibre via `text-field` on a polygon symbol layer, but the
+	// auto-placement is poor for archipelagos (US, Indonesia, …) —
+	// shipping explicit label points keeps placement consistent.
+	polyFC := geojson.NewFeatureCollection()
+	labelFC := geojson.NewFeatureCollection()
+	for iso, c := range r.countries {
+		if !intersects(c.polygon.Bound(), bound) {
 			continue
 		}
-		f := geojson.NewFeature(cloneMultiPolygon(mp))
-		f.Properties["iso"] = iso
-		fc.Append(f)
+		poly := geojson.NewFeature(cloneMultiPolygon(c.polygon))
+		poly.Properties["iso"] = iso
+		poly.Properties["name"] = c.name
+		polyFC.Append(poly)
+
+		// Label point only if its anchor is actually inside this tile
+		// (a country whose POLYGON overlaps but whose label sits in
+		// a neighbouring tile wouldn't render here anyway and adding
+		// it would just bloat the wire payload).
+		if c.labelAt[0] >= bound.Min.X() && c.labelAt[0] <= bound.Max.X() &&
+			c.labelAt[1] >= bound.Min.Y() && c.labelAt[1] <= bound.Max.Y() {
+			lbl := geojson.NewFeature(orb.Point{c.labelAt[0], c.labelAt[1]})
+			lbl.Properties["iso"] = iso
+			lbl.Properties["name"] = c.name
+			labelFC.Append(lbl)
+		}
 	}
 
-	if len(fc.Features) == 0 {
+	if len(polyFC.Features) == 0 {
 		return nil, nil
 	}
 
-	// Assemble the single-layer MVT.
+	// Assemble the MVT. Order matters at render time: MapLibre
+	// composites layers bottom-up, so `countries` polygons land
+	// underneath `country_labels` symbols by default.
 	layers := mvt.Layers{
-		mvt.NewLayer("countries", fc),
+		mvt.NewLayer("countries", polyFC),
+	}
+	if len(labelFC.Features) > 0 {
+		layers = append(layers, mvt.NewLayer("country_labels", labelFC))
 	}
 
 	// Project + clip to the tile's pixel coordinate space.

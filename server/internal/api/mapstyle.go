@@ -307,24 +307,68 @@ func waterLayers(p mapPalette) []any {
 // transition at z=6 is barely perceptible.
 func basemapLayers(p mapPalette) []any {
 	return []any{
-		// Country borders rendered as polygon outlines. The basemap
-		// MVT serves clipped country POLYGON features, not pre-cut
-		// boundary lines, so we use `type: line` against the polygon
-		// source — MapLibre draws each polygon's outline. The
-		// existing background colour (the palette's `background`
-		// field) handles the "land" fill; we'd only paint the
-		// polygons explicitly if we wanted ocean to differ visually,
-		// which the existing water-layer rules do once tiles arrive.
+		// Land fill — a subtle warm beige inside every country
+		// polygon. The page background still bleeds through at the
+		// poles and over unrecognised territories, so picking a fill
+		// just one notch warmer than the background gives the user
+		// a visible "this is a country" indication without painting
+		// the ocean differently. Per-region landcover at z>=6
+		// overwrites this cleanly because both use beige-family
+		// tones.
+		map[string]any{
+			"id":           "basemap-fill",
+			"type":         "fill",
+			"source":       "protomaps",
+			"source-layer": "countries",
+			"maxzoom":      6,
+			"paint": map[string]any{
+				"fill-color":   p.parkFill,
+				"fill-opacity": 0.45,
+			},
+		},
+		// Country borders rendered as polygon outlines. We use
+		// `type: line` against the polygon source — MapLibre draws
+		// each polygon's outline.
 		map[string]any{
 			"id":           "basemap-borders",
 			"type":         "line",
 			"source":       "protomaps",
 			"source-layer": "countries",
-			"maxzoom":      6, // hand off to per-region boundary at z=6
+			"maxzoom":      6,
 			"paint": map[string]any{
 				"line-color":   p.boundaryCountry,
-				"line-width":   interp(0, 0.4, 6, 1.5),
-				"line-opacity": 0.85,
+				"line-width":   interp(0, 0.6, 6, 1.8),
+				"line-opacity": 0.9,
+			},
+		},
+		// Country name labels, rendered from the basemap MVT's
+		// `country_labels` POINT layer (server-side label
+		// placement at the largest sub-polygon's centroid — better
+		// than MapLibre's auto-centroid for archipelagos). Font
+		// size scales gently with zoom so labels read at z=2 and
+		// stay legible at z=5 without overlapping every neighbour.
+		map[string]any{
+			"id":           "basemap-labels",
+			"type":         "symbol",
+			"source":       "protomaps",
+			"source-layer": "country_labels",
+			"minzoom":      2,
+			"maxzoom":      6,
+			"layout": map[string]any{
+				"text-field":      []any{"get", "name"},
+				"text-font":       []any{"Noto Sans Regular"},
+				"text-size":       interp(2, 9, 5, 16),
+				"text-anchor":     "center",
+				"text-allow-overlap": false,
+				"text-padding":    4,
+				"text-transform":  "uppercase",
+				"text-letter-spacing": 0.05,
+			},
+			"paint": map[string]any{
+				"text-color":      p.textCountry,
+				"text-halo-color": p.background,
+				"text-halo-width": 1.4,
+				"text-halo-blur":  0.6,
 			},
 		},
 	}
