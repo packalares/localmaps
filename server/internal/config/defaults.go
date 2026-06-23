@@ -65,8 +65,16 @@ func Defaults() []Default {
 		{"tiles.cacheTTLSeconds", 86400},
 		{"tiles.diskCacheBytes", int64(5368709120)},
 		{"tiles.memoryCacheItems", 1024},
+		// `planetilerJarURL` + `planetilerJarSha256` MUST move together —
+		// the SHA is the integrity anchor for the JAR served at the URL.
+		// Override one without the other and the worker fail-closes with
+		// the empty-SHA error (handlers_agent_fg.go) which is exactly
+		// what we want when an admin points the URL at an unverified
+		// mirror. The bundled pair matches GitHub's official `.sha256`
+		// sidecar for v0.8.2 so a fresh install runs the first tile
+		// build without operator intervention.
 		{"tiles.planetilerJarURL", "https://github.com/onthegomap/planetiler/releases/download/v0.8.2/planetiler.jar"},
-		{"tiles.planetilerJarSha256", ""},
+		{"tiles.planetilerJarSha256", "3e3144673bc76891ed2d443e367d44e081836b9035098afd2ae7f21f75ca4209"},
 		{"tiles.planetilerMemoryMB", 4096},
 		{"tiles.planetilerExtraArgs", []string{}},
 		{"tiles.planetilerMaxDurationMinutes", 240},
