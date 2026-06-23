@@ -19,6 +19,7 @@ package basemap
 
 import (
 	"bytes"
+	"sync"
 
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/encoding/mvt"
@@ -58,6 +59,27 @@ type Renderer struct {
 	// same identifier the picker uses so logs / debug headers
 	// cross-reference cleanly.
 	countries map[string]country
+
+	// installed is the set of country keys the operator has actually
+	// installed pmtiles for. Used to tag polygon features with
+	// `installed: 1` so the style can highlight them differently.
+	// Mutex-protected so the regions-poll goroutine can update it
+	// concurrently with HTTP request handlers reading it during
+	// Render(). All accesses go through the methods below — never
+	// touch the field directly.
+	mu        sync.RWMutex
+	installed map[string]struct{}
+}
+
+// SetInstalled atomically replaces the set of "installed" country
+// keys. The next Render() call will tag matching polygon features
+// with the `installed: 1` property; the style highlights them.
+// Pass keys matching the Atlas's CountryForRegion lookup result
+// (typically ISO_A3). Pass nil/empty to disable highlighting.
+func (r *Renderer) SetInstalled(keys map[string]struct{}) {
+	r.mu.Lock()
+	r.installed = keys
+	r.mu.Unlock()
 }
 
 // NewRenderer converts a pick.Atlas to a basemap.Renderer. Each
@@ -195,6 +217,15 @@ func (r *Renderer) Render(z uint8, x, y uint32) ([]byte, error) {
 		poly := geojson.NewFeature(cloneMultiPolygon(c.polygon))
 		poly.Properties["iso"] = iso
 		poly.Properties["name"] = c.name
+		r.mu.RLock()
+		_, yes := r.installed[iso]
+		r.mu.RUnlock()
+		if yes {
+			// 1 vs absent (rather than 0) keeps the wire size down
+			// — most countries are not installed, so the property
+			// is omitted from those features entirely.
+			poly.Properties["installed"] = 1
+		}
 		polyFC.Append(poly)
 
 		// Label point only if its anchor is actually inside this tile

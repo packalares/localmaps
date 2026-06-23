@@ -108,13 +108,6 @@ func run() error {
 	}
 
 	s := store.New(db, b.RegionsDir, b.PollInterval, atlas, log)
-	// First refresh BEFORE we accept HTTP traffic so the first /tile
-	// request hits a populated store. Subsequent refreshes run on the
-	// poll loop.
-	if err := s.Refresh(ctx); err != nil {
-		log.Warn().Err(err).Msg("initial refresh failed (will retry on poll)")
-	}
-	go s.Run(ctx)
 
 	// Build the world-overview basemap renderer from the same Atlas.
 	// Cheap: just reorganises polygon data into orb.MultiPolygon
@@ -126,6 +119,54 @@ func run() error {
 	} else {
 		log.Info().Msg("basemap renderer ready (low-zoom fallback enabled)")
 	}
+
+	// Whenever the regions store reloads, refresh the basemap
+	// renderer's "installed" set so the highlight colour follows
+	// what the operator actually has on disk. Cheap: builds a small
+	// map keyed by ISO_A3 from the same atlas the picker uses.
+	syncInstalled := func() {
+		if atlas == nil {
+			return
+		}
+		_, loaded := s.Snapshot()
+		keys := make(map[string]struct{}, len(loaded))
+		for name := range loaded {
+			if cp := atlas.CountryForRegion(name); cp != nil {
+				key := cp.ISO_A3
+				if key == "" {
+					key = cp.Admin
+				}
+				if key != "" {
+					keys[key] = struct{}{}
+				}
+			}
+		}
+		bm.SetInstalled(keys)
+	}
+
+	// First refresh BEFORE we accept HTTP traffic so the first /tile
+	// request hits a populated store. Subsequent refreshes run on the
+	// poll loop.
+	if err := s.Refresh(ctx); err != nil {
+		log.Warn().Err(err).Msg("initial refresh failed (will retry on poll)")
+	}
+	syncInstalled()
+	go s.Run(ctx)
+	// Mirror the regions polling cadence for the installed-set sync.
+	// Independent goroutine, so a slow disk-write inside Refresh()
+	// can't delay highlight updates and vice-versa.
+	go func() {
+		t := time.NewTicker(b.PollInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				syncInstalled()
+			}
+		}
+	}()
 
 	mux := http.NewServeMux()
 	(&route.Handlers{

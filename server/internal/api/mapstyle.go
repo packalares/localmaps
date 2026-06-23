@@ -308,24 +308,46 @@ func waterLayers(p mapPalette) []any {
 func basemapLayers(p mapPalette) []any {
 	return []any{
 		// Land fill — a subtle warm beige inside every country
-		// polygon. The page background still bleeds through at the
-		// poles and over unrecognised territories, so picking a fill
-		// just one notch warmer than the background gives the user
-		// a visible "this is a country" indication without painting
-		// the ocean differently. Per-region landcover at z>=6
-		// overwrites this cleanly because both use beige-family
-		// tones.
+		// polygon, applied where the user does NOT have pmtiles.
+		// Filter `["!", ["has", "installed"]]` keeps the highlight
+		// rule below from double-painting the installed countries.
 		map[string]any{
 			"id":           "basemap-fill",
 			"type":         "fill",
 			"source":       "protomaps",
 			"source-layer": "countries",
 			"maxzoom":      6,
+			"filter":       []any{"!", []any{"has", "installed"}},
 			"paint": map[string]any{
 				"fill-color":   p.parkFill,
 				"fill-opacity": 0.45,
 			},
 		},
+		// Highlight fill — countries the operator has actually
+		// installed get a stronger, slightly bluer tint so the
+		// user can see at a glance "I have pmtiles for these
+		// countries" vs "these are just basemap outlines". Tag
+		// comes from the tile-router emitting `installed: 1` on
+		// matching polygon features.
+		map[string]any{
+			"id":           "basemap-installed-fill",
+			"type":         "fill",
+			"source":       "protomaps",
+			"source-layer": "countries",
+			"maxzoom":      6,
+			"filter":       []any{"==", []any{"get", "installed"}, 1},
+			"paint": map[string]any{
+				"fill-color":   p.parkFill,
+				"fill-opacity": 0.85,
+			},
+		},
+		// Ocean background sits under the country fills, painted as
+		// a global rectangle behind everything. We can't ship an
+		// ocean polygon layer (would need a separate dataset), so
+		// instead we fake it: a sky-blue background for the page,
+		// and the country fills sit on top. Implemented via the
+		// existing `background` layer below the basemap — see
+		// buildRegionStyle. No separate rule here.
 		// Country borders rendered as polygon outlines. We use
 		// `type: line` against the polygon source — MapLibre draws
 		// each polygon's outline.
@@ -773,7 +795,20 @@ func buildRegionStyle(name, region string, p mapPalette) map[string]any {
 		map[string]any{
 			"id":    "background",
 			"type":  "background",
-			"paint": map[string]any{"background-color": p.background},
+			// At z<=5 the background acts as the OCEAN colour because
+			// the basemap only paints country polygons (no ocean
+			// layer); at z>=6 per-region pmtiles render water bodies
+			// on top so the background falls back to its normal
+			// land tint. Zoom-step keeps both modes happy in one
+			// style document.
+			"paint": map[string]any{
+				"background-color": []any{
+					"step",
+					[]any{"zoom"},
+					p.water,      // z<6 — ocean
+					6, p.background, // z>=6 — land
+				},
+			},
 		},
 	}
 	// basemapLayers MUST come first under the per-region layers because
