@@ -69,6 +69,15 @@ func newTileHandler(base string) fiber.Handler {
 		}
 		if cc := resp.Header.Get("Cache-Control"); cc != "" {
 			c.Set("Cache-Control", cc)
+		} else if resp.StatusCode >= 400 {
+			// Errors (especially 404) should NEVER be cached: the
+			// tile-router's region coverage changes day-to-day as
+			// builds land, and stale negative caches turn into
+			// "ghost holes" in the rendered map for every connected
+			// client until the cache TTL expires. Force-clear the
+			// browser HTTP cache for any non-2xx response that the
+			// upstream didn't already set a Cache-Control for.
+			c.Set("Cache-Control", "no-store, max-age=0")
 		} else {
 			c.Set("Cache-Control", "public, max-age=300")
 		}

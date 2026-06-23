@@ -79,19 +79,31 @@ func (h *Handlers) serveTile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// notFound is a wrapper that returns 404 with explicit
+	// no-cache headers. Without this the gateway's default
+	// `max-age=300` Cache-Control bleeds onto 404 responses too,
+	// and browsers cache them for 5 minutes — which means any
+	// picker-side mistake (or staged regions still building) gets
+	// frozen into every connected client's cache for the duration.
+	// Tile coverage changes day-to-day; 404s should NEVER cache.
+	notFound := func() {
+		w.Header().Set("Cache-Control", "no-store, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+		http.NotFound(w, r)
+	}
+
 	regions, loaded := h.Store.Snapshot()
 	if len(regions) == 0 {
-		// No installed regions at all — empty 404 is the right answer.
-		// The map UI will show a blank canvas; the operator should
-		// install a region.
-		http.NotFound(w, r)
+		// No installed regions at all. The map UI will show a blank
+		// canvas; the operator should install a region.
+		notFound()
 		return
 	}
 	picked, ok := pick.Pick(regions, int(z), int(x), int(y))
 	if !ok {
-		// Tile is over ocean or outside any installed bbox. Standard
+		// Tile is over ocean or outside any installed region. Standard
 		// slippy-map behaviour: 404; the client just doesn't render.
-		http.NotFound(w, r)
+		notFound()
 		return
 	}
 	l, ok := loaded[picked.Name]
@@ -99,7 +111,7 @@ func (h *Handlers) serveTile(w http.ResponseWriter, r *http.Request) {
 		// Shouldn't happen — picker only sees regions present in
 		// loaded — but defend the contract anyway.
 		h.Log.Warn().Str("region", picked.Name).Msg("picker returned missing region")
-		http.NotFound(w, r)
+		notFound()
 		return
 	}
 
@@ -116,7 +128,7 @@ func (h *Handlers) serveTile(w http.ResponseWriter, r *http.Request) {
 		// is a holy war; we pick 404 because the protomaps client
 		// library treats both as "empty" and 404 keeps Cloudflare /
 		// nginx access logs simpler.
-		http.NotFound(w, r)
+		notFound()
 		return
 	}
 
