@@ -292,6 +292,44 @@ func waterLayers(p mapPalette) []any {
 }
 
 // boundaryLayers renders country boundaries solid, state/province dashed.
+// basemapLayers draw the tile-router's synthetic world overview at
+// z<=5. The basemap MVT exposes one source-layer `countries` whose
+// features are clipped country polygons (gzip-encoded, served with
+// `X-Region: basemap`). At z>=6 country-scale pmtiles take over and
+// these layers fade out so they don't double up on the detailed
+// landcover/water/boundary rules below.
+//
+// Two passes: a flat land FILL (so the user sees coloured land
+// instead of pure background canvas) plus a thin country-border LINE
+// so the outlines of every installed AND uninstalled country are
+// visible — same visual as the picker actually does, just rendered
+// inline. The fill uses the same palette as `landLayers` so the
+// transition at z=6 is barely perceptible.
+func basemapLayers(p mapPalette) []any {
+	return []any{
+		// Country borders rendered as polygon outlines. The basemap
+		// MVT serves clipped country POLYGON features, not pre-cut
+		// boundary lines, so we use `type: line` against the polygon
+		// source — MapLibre draws each polygon's outline. The
+		// existing background colour (the palette's `background`
+		// field) handles the "land" fill; we'd only paint the
+		// polygons explicitly if we wanted ocean to differ visually,
+		// which the existing water-layer rules do once tiles arrive.
+		map[string]any{
+			"id":           "basemap-borders",
+			"type":         "line",
+			"source":       "protomaps",
+			"source-layer": "countries",
+			"maxzoom":      6, // hand off to per-region boundary at z=6
+			"paint": map[string]any{
+				"line-color":   p.boundaryCountry,
+				"line-width":   interp(0, 0.4, 6, 1.5),
+				"line-opacity": 0.85,
+			},
+		},
+	}
+}
+
 // `admin_level` in planetiler's basemap profile is an integer tag on the
 // `boundary` source-layer.
 func boundaryLayers(p mapPalette) []any {
@@ -694,6 +732,14 @@ func buildRegionStyle(name, region string, p mapPalette) map[string]any {
 			"paint": map[string]any{"background-color": p.background},
 		},
 	}
+	// basemapLayers MUST come first under the per-region layers because
+	// they render the tile-router's synthetic world overview at z<=5.
+	// Without these rules the basemap MVT comes back (verified server
+	// side) but MapLibre has no rule that targets `source-layer:
+	// countries` and nothing draws — the user sees a blank canvas
+	// until they zoom in past z=6 where the per-region pmtiles take
+	// over and use the other rules (`landcover`, `water`, etc.).
+	layers = append(layers, basemapLayers(p)...)
 	layers = append(layers, landLayers(p)...)
 	layers = append(layers, waterLayers(p)...)
 	layers = append(layers, boundaryLayers(p)...)
