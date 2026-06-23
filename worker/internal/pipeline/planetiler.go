@@ -31,8 +31,18 @@ func (e *PlanetilerError) Error() string {
 // Per docs/07-config-schema.md — the planetiler* keys are NEEDED
 // (agent-F report).
 type PlanetilerConfig struct {
-	JarPath              string
-	MemoryMB             int
+	JarPath  string
+	MemoryMB int
+	// WorkingDir is the JVM's cwd. Planetiler writes aux sources
+	// (lake_centerline.shp.zip, water-polygons-split-3857.zip,
+	// natural_earth_vector.sqlite.zip) to a RELATIVE `data/sources/`
+	// path. Without an explicit cwd the JVM inherits the worker's
+	// (typically /app, a read-only image layer) and writes fail with
+	// `NoSuchFileException: data/sources/...zip_inprogress` during
+	// the post-download rename. Set this to a persistent writable
+	// dir (e.g. <DataDir>/cache/planetiler) so the aux sources land
+	// on the hostPath and survive container restarts. Empty = inherit.
+	WorkingDir           string
 	ExtraArgs            []string
 	MaxDuration          time.Duration // 0 = no timeout
 	StderrTailBytes      int           // 0 → 4096
@@ -85,6 +95,12 @@ func (r *PlanetilerRunner) Run(ctx context.Context, pbfPath, outPmtilesPath stri
 		factory = realCommandFactory
 	}
 	cmd := factory(ctx, "java", r.buildArgs(pbfPath, outPmtilesPath)...)
+	// Pin the JVM's cwd so Planetiler's relative `data/sources/...`
+	// writes land on a persistent + writable hostPath, NOT the read-only
+	// /app image layer. See WorkingDir docstring on PlanetilerConfig.
+	if r.Cfg.WorkingDir != "" {
+		cmd.Dir = r.Cfg.WorkingDir
+	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("planetiler stdout: %w", err)

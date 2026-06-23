@@ -61,7 +61,14 @@ func AllJobKinds() []JobKind {
 type Boot struct {
 	RedisURL    string `env:"LOCALMAPS_REDIS_URL"   envDefault:"redis://redis:6379/0"`
 	LogLevel    string `env:"LOCALMAPS_LOG_LEVEL"   envDefault:"info"`
-	Concurrency int    `env:"LOCALMAPS_WORKER_CONCURRENCY" envDefault:"4"`
+	// Default 1: tile builds spawn a Planetiler JVM with -Xmx4096m and
+	// ~5 GB total RSS once the OSM passes warm up. Two of them under one
+	// container memory limit OOMKills the worker, which in turn kills
+	// every in-flight planetiler child. Asynq's `Concurrency` is global
+	// across queues, so we serialise everything by default. Operators
+	// who run lighter jobs (region delete, refresh) can override via
+	// `LOCALMAPS_WORKER_CONCURRENCY` once they've sized the container.
+	Concurrency int    `env:"LOCALMAPS_WORKER_CONCURRENCY" envDefault:"1"`
 	// DataDir mirrors LOCALMAPS_DATA_DIR (docs/07-config-schema.md). The
 	// pipeline handler derives region paths off this root.
 	DataDir string `env:"LOCALMAPS_DATA_DIR" envDefault:"/data"`
@@ -88,6 +95,16 @@ func run() error {
 		Timestamp().
 		Str("service", "localmaps-worker").
 		Logger()
+
+	// Sweep orphan `*_inprogress` files left by previous worker crashes
+	// before Asynq starts handing us jobs. Best-effort — log + continue
+	// on failure; the planetiler runner will surface a real error if a
+	// genuine FS problem persists.
+	if removed, cerr := cleanupInProgressFiles(b.DataDir, log); cerr != nil {
+		log.Warn().Err(cerr).Msg("inprogress-sweep encountered errors, continuing")
+	} else if removed > 0 {
+		log.Info().Int("count", removed).Msg("inprogress-sweep cleared orphan downloads")
+	}
 
 	redisOpt, err := asynq.ParseRedisURI(b.RedisURL)
 	if err != nil {

@@ -60,8 +60,15 @@ func tilesWork(deps ChainDeps) StageWork {
 		if err != nil {
 			return fmt.Errorf("ensure planetiler jar: %w", err)
 		}
+		// `WorkingDir` pins the JVM's cwd to a persistent writable path so
+		// Planetiler's relative `data/sources/*` aux downloads land on
+		// the hostPath instead of the read-only image layer at `/app`.
+		// Sharing the JAR cache dir keeps everything in one cache subtree
+		// that the operator can clear with a single `rm -rf`.
+		planetilerWorkdir := filepath.Join(deps.DataDir, "cache", "planetiler")
 		runner, err := pipeline.NewPlanetilerRunner(pipeline.PlanetilerConfig{
 			JarPath:     jarPath,
+			WorkingDir:  planetilerWorkdir,
 			MemoryMB:    memMB,
 			ExtraArgs:   extra,
 			MaxDuration: time.Duration(maxMin) * time.Minute,
