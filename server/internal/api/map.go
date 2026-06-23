@@ -21,20 +21,24 @@ import (
 var protomapsClient = &http.Client{Timeout: 3 * time.Second}
 
 // newTileHandler proxies GET /api/tiles/{region}/{z}/{x}/{y}.pbf to the
-// in-cluster pmtiles server. protomaps (pmtiles serve) exposes XYZ
-// endpoints at `<base>/<archive>/{z}/{x}/{y}.mvt`, where the archive
-// name is the pmtiles filename without extension. Regions live on disk
-// at `<dataDir>/regions/<region>/map.pmtiles`, so the archive name per
-// region is `<region>/map`.
+// in-cluster tile-router. The router picks WHICH region's pmtiles
+// covers a given (z,x,y) by bbox overlap — see the tile-router/
+// package — so the `{region}` segment in the URL is now decorative.
+// The legacy URL shape is preserved purely so the existing UI keeps
+// working without a redeploy; we strip the region, forward to the
+// router's `/tile/{z}/{x}/{y}.pbf`, and pass the response through.
 //
-// base should be the upstream root (e.g. `http://protomaps:8000`),
+// base should be the upstream root (e.g. `http://127.0.0.1:8000`),
 // trailing slash stripped. An empty base falls back to the default.
 func newTileHandler(base string) fiber.Handler {
 	base = strings.TrimRight(base, "/")
 	if base == "" {
-		base = "http://protomaps:8000"
+		base = "http://127.0.0.1:8000"
 	}
 	return func(c fiber.Ctx) error {
+		// region intentionally ignored: the tile-router picks by bbox.
+		// We still require it to be non-empty so a malformed URL like
+		// `/api/tiles//1/0/0.pbf` doesn't reach the upstream.
 		region := c.Params("region")
 		z := c.Params("z")
 		x := c.Params("x")
@@ -42,7 +46,7 @@ func newTileHandler(base string) fiber.Handler {
 		if region == "" || z == "" || x == "" || y == "" {
 			return c.SendStatus(fiber.StatusBadRequest)
 		}
-		url := base + "/" + region + "/map/" + z + "/" + x + "/" + y + ".mvt"
+		url := base + "/tile/" + z + "/" + x + "/" + y + ".pbf"
 		req, err := http.NewRequestWithContext(c.Context(), http.MethodGet, url, nil)
 		if err != nil {
 			return c.SendStatus(fiber.StatusInternalServerError)
@@ -53,10 +57,16 @@ func newTileHandler(base string) fiber.Handler {
 		}
 		defer resp.Body.Close()
 
-		// Preserve protomaps' status (notably 404 for missing tiles and
-		// 204 for empty tiles) so the client can react appropriately.
+		// Preserve upstream's status (notably 404 for missing tiles)
+		// so the map client can render an empty tile.
 		c.Status(resp.StatusCode)
 		c.Set("Content-Type", "application/vnd.mapbox-vector-tile")
+		// pmtiles stores tiles gzip-compressed and the router serves
+		// them as-is; forward Content-Encoding so the browser will
+		// decompress inline rather than us paying CPU to decode.
+		if ce := resp.Header.Get("Content-Encoding"); ce != "" {
+			c.Set("Content-Encoding", ce)
+		}
 		if cc := resp.Header.Get("Cache-Control"); cc != "" {
 			c.Set("Cache-Control", cc)
 		} else {
