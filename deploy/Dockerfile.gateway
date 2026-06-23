@@ -11,7 +11,7 @@
 # docs/02-stack.md which pins `modernc.org/sqlite`.
 
 # ---------- Stage 1: build ----------
-FROM golang:1.23-alpine AS build
+FROM golang:1.25-alpine AS build
 
 # git is needed for `go mod download` when any dependency is fetched
 # directly from a VCS tag. ca-certs for HTTPS module proxy.
