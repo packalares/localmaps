@@ -36,9 +36,12 @@ on:
     paths:
       - "server/**"
       - "worker/**"
+      - "tile-router/**"
       - "ui/**"
       - "contracts/**"
       - "deploy/**"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/release.yml"
     tags:
       - "v*.*.*"
