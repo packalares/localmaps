@@ -35,18 +35,25 @@ type Loaded struct {
 // Store is the in-memory view of installed regions. Safe for
 // concurrent Snapshot/Run.
 type Store struct {
-	db          *sql.DB
-	regionsDir  string        // e.g. /data/regions; each ready region's pmtiles lives at <regionsDir>/<name>/map.pmtiles
+	db           *sql.DB
+	regionsDir   string        // e.g. /data/regions; each ready region's pmtiles lives at <regionsDir>/<name>/map.pmtiles
 	pollInterval time.Duration // how often to refresh from sqlite
-	log         zerolog.Logger
+	atlas        *pick.Atlas   // Natural Earth country polygons; nil = polygon picking disabled
+	log          zerolog.Logger
 
-	mu      sync.RWMutex
-	loaded  map[string]*Loaded // by region name
+	mu     sync.RWMutex
+	loaded map[string]*Loaded // by region name
 }
 
 // New constructs a Store but does NOT refresh — call Refresh() once
 // at boot to populate, then Run() to keep it fresh.
-func New(db *sql.DB, regionsDir string, pollInterval time.Duration, log zerolog.Logger) *Store {
+//
+// `atlas` is the Natural Earth country polygon set; pass nil to
+// disable polygon picking entirely (bbox-only). When non-nil, each
+// region whose name resolves to a country (e.g. `europe-romania` →
+// "Romania") gets that polygon attached at load time so the picker
+// can do point-in-polygon tests.
+func New(db *sql.DB, regionsDir string, pollInterval time.Duration, atlas *pick.Atlas, log zerolog.Logger) *Store {
 	if pollInterval <= 0 {
 		pollInterval = 5 * time.Second
 	}
@@ -54,6 +61,7 @@ func New(db *sql.DB, regionsDir string, pollInterval time.Duration, log zerolog.
 		db:           db,
 		regionsDir:   regionsDir,
 		pollInterval: pollInterval,
+		atlas:        atlas,
 		log:          log,
 		loaded:       map[string]*Loaded{},
 	}
@@ -129,9 +137,23 @@ func (s *Store) Refresh(ctx context.Context) error {
 			continue
 		}
 		minLon, minLat, maxLon, maxLat := rdr.BBox()
+		// Resolve the region name to a Natural Earth country polygon
+		// if possible — "europe-romania" → "Romania". Regions that
+		// don't map (e.g. "europe-alps", multi-country super-extract)
+		// get nil here and the picker falls back to bbox-of-tile-center.
+		var poly *pick.CountryPolygon
+		if s.atlas != nil {
+			poly = s.atlas.CountryForRegion(name)
+			if poly != nil {
+				s.log.Debug().Str("region", name).
+					Str("country", poly.Admin).
+					Msg("attached country polygon")
+			}
+		}
 		newlyLoaded[name] = &Loaded{
 			Region: pick.Region{
-				Name: name,
+				Name:    name,
+				Polygon: poly,
 				BBox: pick.BBox{
 					MinLon: minLon, MinLat: minLat,
 					MaxLon: maxLon, MaxLat: maxLat,

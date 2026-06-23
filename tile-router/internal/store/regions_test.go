@@ -66,7 +66,7 @@ func TestRefresh_LoadsReadyRegions(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	s := New(db, regionsDir, time.Hour, zerolog.Nop())
+	s := New(db, regionsDir, time.Hour, nil, zerolog.Nop())
 	if err := s.Refresh(context.Background()); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestRefresh_IgnoresNonReadyRegions(t *testing.T) {
 	_, _ = db.Exec(`INSERT INTO regions (name, state) VALUES (?, ?)`, "europe-bulgaria", "processing_tiles")
 	_, _ = db.Exec(`INSERT INTO regions (name, state) VALUES (?, ?)`, "europe-poland", "failed")
 
-	s := New(db, regionsDir, time.Hour, zerolog.Nop())
+	s := New(db, regionsDir, time.Hour, nil, zerolog.Nop())
 	if err := s.Refresh(context.Background()); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestRefresh_SkipsRegionsWithMissingFile(t *testing.T) {
 	tmp := t.TempDir() // empty — no map.pmtiles inside
 
 	_, _ = db.Exec(`INSERT INTO regions (name, state) VALUES (?, ?)`, "europe-ghost", "ready")
-	s := New(db, tmp, time.Hour, zerolog.Nop())
+	s := New(db, tmp, time.Hour, nil, zerolog.Nop())
 	// Refresh shouldn't return an error — open failures are logged
 	// and the region is skipped so one bad row can't shadow the rest.
 	if err := s.Refresh(context.Background()); err != nil {
@@ -123,7 +123,7 @@ func TestRefresh_UnloadsRemovedRegions(t *testing.T) {
 	regionsDir := setupRegionsDir(t)
 	_, _ = db.Exec(`INSERT INTO regions (name, state) VALUES (?, ?)`, "europe-romania", "ready")
 
-	s := New(db, regionsDir, time.Hour, zerolog.Nop())
+	s := New(db, regionsDir, time.Hour, nil, zerolog.Nop())
 	_ = s.Refresh(context.Background())
 
 	regions, _ := s.Snapshot()
@@ -147,7 +147,7 @@ func TestSnapshot_IsStableUnderConcurrentRefresh(t *testing.T) {
 	regionsDir := setupRegionsDir(t)
 	_, _ = db.Exec(`INSERT INTO regions (name, state) VALUES (?, ?)`, "europe-romania", "ready")
 
-	s := New(db, regionsDir, time.Hour, zerolog.Nop())
+	s := New(db, regionsDir, time.Hour, nil, zerolog.Nop())
 	_ = s.Refresh(context.Background())
 
 	// Hammer Snapshot from N goroutines while a Refresh churns in

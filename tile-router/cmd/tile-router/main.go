@@ -33,6 +33,7 @@ import (
 	"github.com/rs/zerolog"
 	_ "modernc.org/sqlite"
 
+	"github.com/packalares/localmaps/tile-router/internal/pick"
 	"github.com/packalares/localmaps/tile-router/internal/route"
 	"github.com/packalares/localmaps/tile-router/internal/store"
 )
@@ -94,7 +95,18 @@ func run() error {
 		syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	s := store.New(db, b.RegionsDir, b.PollInterval, log)
+	// Load the country-polygon atlas. Embedded gzip → ~50 ms decode.
+	// On failure we log + continue with nil — the picker degrades to
+	// bbox-of-tile-center which is still correct for non-border tiles.
+	atlas, atlasErr := pick.LoadAtlas()
+	if atlasErr != nil {
+		log.Warn().Err(atlasErr).Msg("loading country polygons failed; falling back to bbox-only picking")
+	} else {
+		log.Info().Int("countries", len(atlas.Countries)).
+			Msg("country polygons loaded")
+	}
+
+	s := store.New(db, b.RegionsDir, b.PollInterval, atlas, log)
 	// First refresh BEFORE we accept HTTP traffic so the first /tile
 	// request hits a populated store. Subsequent refreshes run on the
 	// poll loop.
