@@ -124,8 +124,8 @@ export function RegionSwitcher({ className }: RegionSwitcherProps) {
         <TooltipContent side="bottom" align="start" className="max-w-xs">
           The map already shows every installed region. This picks the
           region used for routing and search — the gateway answers
-          "directions" and "search address" queries against ONE region
-          at a time.
+          directions and address-search queries against ONE region at
+          a time.
         </TooltipContent>
       </Tooltip>
       <DropdownMenuContent align="start" className="min-w-[14rem]">
