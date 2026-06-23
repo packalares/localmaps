@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1.7
+#
+# LocalMaps — tile-router image.
+#
+# Replaces the previous `protomaps` go-pmtiles container with a small
+# Go service that knows about multiple regions: it reads the
+# regions table from sqlite, keeps a pmtiles.Reader open per
+# `state=ready` region, and picks which file to serve a given tile
+# from based on bbox overlap. See tile-router/README.md (or the
+# package docstring at internal/route/handlers.go) for the protocol.
+#
+# Notes:
+# - Pure Go build (modernc.org/sqlite), no CGO needed — alpine target.
+# - The binary reads /data via the chart's data hostPath subPath
+#   (mounted at /data); no extra writable paths needed.
+
+# ---------- Stage 1: build ----------
+FROM golang:1.24-alpine AS build
+
+WORKDIR /src
+
+# Copy the bare minimum — go.mod first for cache friendliness, then
+# the tile-router subtree. We don't need worker/ or server/ to build
+# this binary.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY tile-router/ ./tile-router/
+
+RUN CGO_ENABLED=0 go build \
+    -ldflags="-s -w" \
+    -o /tile-router \
+    ./tile-router/cmd/tile-router
+
+# ---------- Stage 2: runtime ----------
+FROM alpine:3.20
+
+# `ca-certificates` for any HTTPS calls the tile-router might make in
+# future; today there are none, but the cost is ~200 KB and it future-
+# proofs the image. `tzdata` for honest UTC logging.
+RUN apk add --no-cache ca-certificates tzdata
+
+# Run as non-root. The chart's data hostPath is owned by uid 1000
+# (set by the init-chown-data init container) so we match.
+RUN addgroup -g 1000 app && adduser -u 1000 -G app -D app
+USER app
+
+COPY --from=build /tile-router /tile-router
+
+EXPOSE 8000
+
+# Defaults match the helm chart's configmap; override via env at deploy.
+ENV LOCALMAPS_TILE_ROUTER_ADDR=":8000" \
+    LOCALMAPS_CONFIG_DB="/data/config.db" \
+    LOCALMAPS_REGIONS_DIR="/data/regions" \
+    LOCALMAPS_TILE_ROUTER_POLL="5s"
+
+ENTRYPOINT ["/tile-router"]
