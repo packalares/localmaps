@@ -83,7 +83,7 @@ func TestPeliasRunner_ProgressFractions(t *testing.T) {
 
 	err := runner.Run(
 		context.Background(),
-		RegionPaths{PbfPath: "/data/source.osm.pbf"},
+		"/data/source.osm.pbf",
 		rep,
 	)
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestPeliasRunner_PropagatesImporterFailure(t *testing.T) {
 	})
 	err := runner.Run(
 		context.Background(),
-		RegionPaths{PbfPath: "/data/source.osm.pbf"},
+		"/data/source.osm.pbf",
 		&captureReporter{},
 	)
 	require.Error(t, err)
@@ -143,7 +143,7 @@ func TestPeliasRunner_RejectsMissingExecutable(t *testing.T) {
 		Executables: map[string][]string{},
 		WorkDir:     dir,
 	}
-	err := r.Run(context.Background(), RegionPaths{}, &captureReporter{})
+	err := r.Run(context.Background(), "", &captureReporter{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), importerKey)
 }
@@ -155,7 +155,7 @@ func TestPeliasRunner_RejectsMissingWorkDir(t *testing.T) {
 		Config:      ImportConfig{Region: "r", PbfPath: "/p", ESHost: "h", ESPort: 9200, IndexName: "i"},
 		Executables: map[string][]string{importerKey: {"/bin/true"}},
 	}
-	err := r.Run(context.Background(), RegionPaths{}, &captureReporter{})
+	err := r.Run(context.Background(), "", &captureReporter{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "WorkDir")
 }

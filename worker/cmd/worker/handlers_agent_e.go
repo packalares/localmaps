@@ -104,12 +104,12 @@ func registerAgentEHandlers(mux *asynq.ServeMux, b Boot, log zerolog.Logger) *sc
 			jobs.KindRegionSwap, geocodingWork(chain), log))
 	mux.HandleFunc(jobs.KindRegionSwap, swapHandler(chain, runSwap, log))
 
-	// Cross-country routing: a single Valhalla tile graph built from
-	// every installed region's PBF. Enqueued by chain.go's finishSwap
-	// whenever a region transitions to ready, so each new install
-	// rebuilds the combined graph automatically. See
-	// handler_combined_routing.go.
-	mux.HandleFunc(JobKindBuildCombinedRouting, combinedRoutingHandler(&chain, log))
+	// World routing: a community-published planet-scale Valhalla tar
+	// is downloaded ONCE on first region install (when routingWork
+	// finds no /data/regions/_world/valhalla_tiles.tar). Replaces the
+	// per-region build + cross-country combined-rebuild that used to
+	// live here. See handler_routing_download.go.
+	mux.HandleFunc(JobKindDownloadRoutingTiles, routingDownloadHandler(&chain, log))
 
 	// Still-pending kinds. Keep wired so Asynq surfaces them.
 	for _, kind := range []string{

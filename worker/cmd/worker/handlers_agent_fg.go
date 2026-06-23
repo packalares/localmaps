@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/hibiken/asynq"
 	"github.com/rs/zerolog"
 
 	"github.com/packalares/localmaps/internal/jobs"
@@ -98,47 +99,43 @@ func tilesWork(deps ChainDeps) StageWork {
 	}
 }
 
-// routingWork returns the real `pipeline:routing` StageWork. It invokes
-// the four-step valhalla build chain (admins → timezones → tiles →
-// extract) against the region's pbf. The binaries must be on PATH in
-// the worker image; absence is surfaced via the runner's start error.
+// routingWork is the `pipeline:routing` StageWork. It used to invoke
+// the four-step valhalla build (admins → timezones → tiles → extract)
+// against THIS region's pbf, producing per-region routing tiles that
+// could never cross-border. The new mechanism ensures one planet-scale
+// routing graph exists once across all regions: see
+// handler_routing_download.go for the download-once-on-first-run flow.
+//
+// At the per-region stage we just confirm the world routing tar exists
+// (or trigger the download if it doesn't) — no PBF parsing here, no
+// per-region tar output. The world tar is shared by every region's
+// routing queries.
 func routingWork(deps ChainDeps) StageWork {
-	return func(ctx context.Context, regionDir string, p jobs.PipelineStagePayload, log zerolog.Logger) error {
-		tileDirName := settingOrDefault(deps.Settings, "routing.valhallaTileDirName", "valhalla_tiles")
-		paths := pipeline.RegionPaths{
-			Root:       regionDir,
-			RegionKey:  p.Region,
-			PbfPath:    filepath.Join(regionDir, "source.osm.pbf"),
-			TileDir:    filepath.Join(regionDir, tileDirName),
-			TarPath:    filepath.Join(regionDir, tileDirName+".tar"),
-			AdminDB:    filepath.Join(regionDir, "valhalla_admin.sqlite"),
-			TimezoneDB: filepath.Join(regionDir, "valhalla_timezones.sqlite"),
+	return func(ctx context.Context, _ string, p jobs.PipelineStagePayload, log zerolog.Logger) error {
+		worldTar := filepath.Join(deps.DataDir, "regions", "_world", "valhalla_tiles.tar")
+		if _, err := os.Stat(worldTar); err == nil {
+			log.Info().Str("worldTar", worldTar).
+				Str("region", p.Region).
+				Msg("pipeline:routing — world routing tar already in place; nothing to build")
+			return nil
 		}
-		if err := os.MkdirAll(paths.TileDir, 0o755); err != nil {
-			return fmt.Errorf("mkdir tiledir: %w", err)
+		// Tar missing: enqueue the download. We don't block waiting for
+		// it to finish because the download can be hours and we want
+		// the chain to advance to geocoding right away.
+		if deps.Queue != nil {
+			task := asynq.NewTask(JobKindDownloadRoutingTiles, nil)
+			if _, err := deps.Queue.EnqueueContext(ctx, task,
+				asynq.Queue("default"),
+				asynq.MaxRetry(2),
+				asynq.Timeout(12*time.Hour),
+			); err != nil {
+				log.Warn().Err(err).Msg("enqueue routing-download failed; cross-region routing will be unavailable until manually triggered")
+			} else {
+				log.Info().Str("region", p.Region).
+					Msg("pipeline:routing — enqueued world routing download (one-time)")
+			}
 		}
-		cfg := pipeline.NewValhallaRuntimeConfig(
-			settingIntOrDefault(deps.Settings, "routing.valhallaConcurrency", 0),
-			settingIntOrDefault(deps.Settings, "routing.valhallaBuildTimeoutMinutes", 60),
-			settingArrOrDefault(deps.Settings, "routing.valhallaExtraArgs", nil),
-		)
-		runner := pipeline.NewValhallaRunner(log, cfg)
-		progress := newStageProgress(ctx, deps, p.JobID, log)
-		start := time.Now()
-		if err := runner.Run(ctx, p.Region, paths, progress); err != nil {
-			return fmt.Errorf("valhalla run: %w", err)
-		}
-		log.Info().Str("tileDir", paths.TileDir).
-			Dur("duration", time.Since(start)).Msg("pipeline:routing complete")
-		return pipeline.UpdateRoutingSection(regionDir, p.Region, pipeline.RoutingSection{
-			BuiltAt:              time.Now().UTC(),
-			BuildDurationSeconds: time.Since(start).Seconds(),
-			Tool:                 "valhalla_build_tiles",
-			TileDir:              paths.TileDir,
-			TarPath:              paths.TarPath,
-			AdminDB:              paths.AdminDB,
-			TimezoneDB:           paths.TimezoneDB,
-		})
+		return nil
 	}
 }
 
