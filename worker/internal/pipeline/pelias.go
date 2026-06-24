@@ -69,10 +69,10 @@ const peliasStage = "pelias.openstreetmap"
 // Context cancellation terminates the child via SIGTERM; a 15s grace
 // period is followed by SIGKILL.
 //
-// hostPbfPath supplies the .osm.pbf absolute host path (logged for
-// debug). The container-side path lives on Config.PbfPath. progress
-// may be nil; nil is replaced with DiscardProgress.
-func (r *PeliasRunner) Run(ctx context.Context, hostPbfPath string, progress ProgressReporter) error {
+// paths supplies the .osm.pbf absolute host path (logged for debug).
+// The container-side path lives on Config.PbfPath. progress may be nil;
+// nil is replaced with DiscardProgress.
+func (r *PeliasRunner) Run(ctx context.Context, paths RegionPaths, progress ProgressReporter) error {
 	if r.WorkDir == "" {
 		return errors.New("pelias runner: WorkDir required")
 	}
@@ -99,7 +99,7 @@ func (r *PeliasRunner) Run(ctx context.Context, hostPbfPath string, progress Pro
 	}
 	r.Logger.Info().
 		Str("region", cfg.Region).
-		Str("hostPbf", hostPbfPath).
+		Str("hostPbf", paths.PbfPath).
 		Str("containerPbf", cfg.PbfPath).
 		Str("configPath", cfgPath).
 		Str("indexName", cfg.IndexName).
